@@ -1,0 +1,39 @@
+@import "additional-styles/utility-patterns.css";
+@import "additional-styles/theme.css";
+
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+
+
+/* Importa Flowbite para integrar sus estilos */
+/*@import "flowbite"; */
+
+/* General Reset */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+/* Global Styles */
+body {
+    font-family: 'League Spartan', Arial, sans-serif;
+    line-height: 1;
+    color: #333;
+    background-color: #f9f9f9;
+}
+/* h1,h2,h3,h4,h5,h6{
+    font-family: 'League Spartan', Arial, sans-serif;
+}
+p{
+    font-family: 'Inter', Arial, sans-serif;
+} */
+
+
+.mybody{
+    width: 100vw;
+}
+

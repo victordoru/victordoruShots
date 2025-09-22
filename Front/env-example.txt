@@ -1,0 +1,8 @@
+# Backend URL
+VITE_URL_BACKEND=http://localhost:5001
+
+# Google OAuth
+VITE_GOOGLE_CLIENT_ID=your-google-client-id
+
+# Stripe (keep for future use)
+VITE_STRIPE_PUBLISHABLE_KEY=pk_test_your_publishable_key

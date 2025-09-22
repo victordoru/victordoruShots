@@ -1,0 +1,26 @@
+# Database
+MONGO_URI=mongodb://localhost:27017/your-app-name
+
+# JWT Secrets
+JWT_SECRET=your-super-secret-jwt-key-here
+JWT_REFRESH_SECRET=your-super-secret-refresh-key-here
+
+# Frontend URL
+URL_FRONTEND=http://localhost:5173
+
+# Email Configuration (Gmail example)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your-email@gmail.com
+SMTP_PASS=your-app-password
+SMTP_FROM=your-email@gmail.com
+
+# Google OAuth
+GOOGLE_CLIENT_ID=your-google-client-id
+
+# Stripe (keep for future use)
+STRIPE_PUBLISHABLE_KEY=pk_test_your_publishable_key
+STRIPE_SECRET_KEY=sk_test_your_secret_key
+
+# Environment
+NODE_ENV=development
