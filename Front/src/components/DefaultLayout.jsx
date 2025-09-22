@@ -28,6 +28,7 @@ const DefaultLayout = ({ children }) => {
   const isContentManagement = location.pathname === "/content-management";
   const IsCommingSoon = location.pathname === "/coming-soon" || location.pathname === "/coming-soon/";
   const isEventListPage = location.pathname === "/events";
+  const isPhotoDetail = location.pathname === "/photo/:photoId";
 
   useEffect(() => {
     AOS.init({
@@ -55,11 +56,11 @@ const DefaultLayout = ({ children }) => {
       document.body.style.overflow = 'auto';
     };
   }, [isEventListPage, isMobileView]);
-  const backgroundClass = isHome || isContentManagement
+  const backgroundClass = isHome || isContentManagement || isPhotoDetail
     ? "bg-[#0D0D0D] text-white"
     : IsCommingSoon
-      ? "bg-coral text-white"
-      : "bg-white text-slate-900";
+      ? "bg-black text-white"
+      : "bg-black text-white";
 
   const showFooter = !(isEventListPage && isMobileView);
 
@@ -71,7 +72,7 @@ const DefaultLayout = ({ children }) => {
           isEventListPage ? "" : "px-0"
         } ${isEventListPage && isMobileView ? "overflow-hidden h-screen" : "overflow-auto"}`}
       >
-        {(isHome || isContentManagement) && (
+        {(isHome || isContentManagement || isPhotoDetail) && (
           <div className="absolute inset-0">
             <div className="absolute inset-0 pointer-events-none bg-gradient-to-b from-[#0D0D0D] via-[#151515ee] to-[#0D0D0D]" />
             <div className="relative h-full w-full">

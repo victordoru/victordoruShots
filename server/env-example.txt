@@ -22,5 +22,11 @@ GOOGLE_CLIENT_ID=your-google-client-id
 STRIPE_PUBLISHABLE_KEY=pk_test_your_publishable_key
 STRIPE_SECRET_KEY=sk_test_your_secret_key
 
+# Prodigi Print API
+PRODIGI_API_KEY=your-prodigi-sandbox-api-key
+PRODIGI_BASE_URL=https://api.sandbox.prodigi.com/v4.0
+PRODIGI_ASSET_BASE_URL=https://your-public-domain/uploads
+PRODIGI_DEFAULT_SHIPPING_METHOD=Budget
+
 # Environment
 NODE_ENV=development

@@ -33,6 +33,7 @@ app.use("/api/auth", require("./routes/authRoutes"));
 app.use("/api/user", require("./routes/userRoutes"));
 app.use("/api/payments", require("./routes/stripeRoutes"));
 app.use("/api/photos", require("./routes/photoRoutes"));
+app.use("/api/prodigi", require("./routes/prodigiRoutes"));
 
 
 // Iniciar servidor
