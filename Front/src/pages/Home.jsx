@@ -15,6 +15,7 @@ const buildColumns = (photos, columns = 3) => {
   return output;
 };
 
+
 const Home = () => {
   const [photos, setPhotos] = useState([]);
   const [loading, setLoading] = useState(true);
