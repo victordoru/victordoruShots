@@ -1,12 +1,21 @@
 const mongoose = require("mongoose");
 
-const prodigiProductSchema = new mongoose.Schema(
+const colorOptionSchema = new mongoose.Schema(
+  {
+    code: { type: String, required: true, trim: true },
+    name: { type: String, trim: true },
+  },
+  { _id: false }
+);
+
+const prodigiCatalogProductSchema = new mongoose.Schema(
   {
     sku: {
       type: String,
       required: true,
       trim: true,
       uppercase: true,
+      unique: true,
     },
     name: {
       type: String,
@@ -17,32 +26,31 @@ const prodigiProductSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
-    retailPrice: {
+    basePrice: {
       type: Number,
-      default: 0,
       min: 0,
     },
     currency: {
       type: String,
-      default: "EUR",
       trim: true,
       uppercase: true,
       minlength: 3,
       maxlength: 3,
+      default: "EUR",
     },
-    sizing: {
+    defaultSizing: {
       type: String,
-      default: "fillPrintArea",
       trim: true,
     },
-    mockupImages: {
-      type: [String],
+    availableColors: {
+      type: [colorOptionSchema],
       default: [],
+    },
+    attributes: {
+      type: mongoose.Schema.Types.Mixed,
     },
   },
   { timestamps: true }
 );
 
-prodigiProductSchema.index({ sku: 1 }, { unique: true });
-
-module.exports = mongoose.model("ProdigiProduct", prodigiProductSchema);
+module.exports = mongoose.model("ProdigiCatalogProduct", prodigiCatalogProductSchema);

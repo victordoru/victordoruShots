@@ -3,7 +3,8 @@ const fs = require("fs");
 const path = require("path");
 const mongoose = require("mongoose");
 const Photo = require("../models/Photo");
-const ProdigiProduct = require("../models/ProdigiProduct");
+const ProdigiCatalogProduct = require("../models/ProdigiCatalogProduct");
+const PhotoProdigiVariant = require("../models/PhotoProdigiVariant");
 const {
   isProdigiConfigured,
   prodigiRequest,
@@ -61,23 +62,30 @@ const normalizeRecipient = (recipient = {}) => {
   };
 };
 
-const buildAssetUrl = (imagePath) => {
-  if (/^https?:\/\//i.test(imagePath)) {
-    return imagePath;
+const parseJSON = (value, fallback) => {
+  if (!value) return fallback;
+  try {
+    if (typeof value === "string") {
+      return JSON.parse(value);
+    }
+    return value;
+  } catch (error) {
+    return fallback;
   }
+};
 
-  if (!PRODIGI_ASSET_BASE_URL) {
-    throw new Error(
-      "Prodigi asset base URL is not configured and image path is relative"
-    );
-  }
+const removeLeadingSlash = (value) => value.replace(/^\/+/, "");
 
-  return `${PRODIGI_ASSET_BASE_URL.replace(/\/$/, "")}/${imagePath.replace(/^\//, "")}`;
+const getMockupFiles = (req) => {
+  if (!req.files) return [];
+  if (Array.isArray(req.files)) return req.files;
+  if (Array.isArray(req.files.mockups)) return req.files.mockups;
+  return [];
 };
 
 const removeLocalFile = (relativePath) => {
-  if (!relativePath || typeof relativePath !== "string") return;
-  const normalized = relativePath.replace(/^\/+/, "");
+  if (!relativePath) return;
+  const normalized = removeLeadingSlash(relativePath);
   if (!normalized.startsWith("uploads/")) return;
 
   const filePath = path.join(__dirname, "..", normalized);
@@ -88,110 +96,661 @@ const removeLocalFile = (relativePath) => {
   });
 };
 
-const parseArrayFromBody = (value) => {
-  if (!value) return [];
-  if (Array.isArray(value)) return value;
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (error) {
-    return [];
+const buildAssetUrl = (imagePath) => {
+  if (!imagePath) {
+    return null;
   }
+
+  if (/^https?:\/\//i.test(imagePath)) {
+    return imagePath;
+  }
+
+  if (!PRODIGI_ASSET_BASE_URL) {
+    if (!imagePath.startsWith("/")) {
+      return `/${imagePath}`;
+    }
+    return imagePath;
+  }
+
+  const base = PRODIGI_ASSET_BASE_URL.replace(/\/$/, "");
+  const cleanedPath = imagePath.startsWith("/") ? imagePath : `/${imagePath}`;
+  return `${base}${cleanedPath}`;
 };
 
-const toCurrencyCode = (value, fallback = "EUR") => {
-  if (!value) return fallback;
-  return String(value).trim().toUpperCase().slice(0, 3) || fallback;
-};
-
-const toSizingValue = (value, fallback = "fillPrintArea") => {
-  if (!value) return fallback;
-  return String(value).trim() || fallback;
-};
-
-const toNumeric = (value, fallback = 0) => {
-  if (value === undefined || value === null || value === "") return fallback;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-};
-
-const loadPhotoAndProduct = async ({ photoId, productId, productSku }) => {
-  if (!photoId) {
-    return {
-      error: {
-        status: 400,
-        message: "photoId es obligatorio",
-      },
-    };
+const ensurePhotoAccessible = async (photoId) => {
+  if (!mongoose.Types.ObjectId.isValid(photoId)) {
+    return { error: { status: 400, message: "photoId inválido" } };
   }
 
   const photo = await Photo.findById(photoId).lean();
   if (!photo) {
+    return { error: { status: 404, message: "Fotografía no encontrada" } };
+  }
+
+  return { photo };
+};
+
+const mapMockupImages = (mockupImages = []) => {
+  const mapping = new Map();
+  mockupImages.forEach((image) => {
+    const id = image._id.toString();
+    mapping.set(id, {
+      id,
+      url: image.url,
+      label: image.label || null,
+    });
+  });
+  return mapping;
+};
+
+const buildVariantResponse = (variantDoc, { includeInactive = false } = {}) => {
+  if (!variantDoc) return null;
+  const variant = variantDoc.toObject({ virtuals: false });
+
+  if (!includeInactive && !variant.isActive) {
+    return null;
+  }
+
+  const catalogProduct = variant.catalogProduct
+    ? {
+        id: variant.catalogProduct._id.toString(),
+        sku: variant.catalogProduct.sku,
+        name: variant.catalogProduct.name,
+        description: variant.catalogProduct.description,
+        availableColors: variant.catalogProduct.availableColors || [],
+        defaultSizing: variant.catalogProduct.defaultSizing,
+      }
+    : null;
+
+  const mockupImageMap = mapMockupImages(variant.mockupImages);
+  const mockupImages = Array.from(mockupImageMap.values());
+
+  const colorOptions = (variant.colorOptions || []).map((option) => {
+    const normalizedCode = option.code
+      ? String(option.code).trim().toUpperCase()
+      : "";
+
+    const images = (option.mockupImageRefs || [])
+      .map((ref) => mockupImageMap.get(ref.toString()))
+      .filter(Boolean);
+
     return {
-      error: {
-        status: 404,
-        message: "Fotografía no encontrada",
-      },
+      code: normalizedCode,
+      name: option.name || normalizedCode,
+      assetUrl: option.assetUrl || null,
+      mockupImageRefs: (option.mockupImageRefs || []).map((id) => id.toString()),
+      mockupImages: images,
     };
+  });
+
+  return {
+    id: variant._id.toString(),
+    photoId: variant.photo.toString(),
+    catalogProduct,
+    displayName: variant.displayName || catalogProduct?.name || null,
+    description: variant.description || catalogProduct?.description || null,
+    retailPrice:
+      variant.retailPrice !== undefined ? variant.retailPrice : catalogProduct?.basePrice,
+    currency: variant.currency || catalogProduct?.currency || "EUR",
+    sizing: variant.sizing || catalogProduct?.defaultSizing || null,
+    assetUrl: variant.assetUrl || null,
+    mockupImages,
+    colorOptions,
+    isActive: variant.isActive,
+    createdAt: variant.createdAt,
+    updatedAt: variant.updatedAt,
+  };
+};
+
+const processVariantFiles = (variant, files = [], meta = []) => {
+  if (!files.length) return { newImages: [], tempIdMap: new Map() };
+
+  if (meta.length && meta.length !== files.length) {
+    throw Object.assign(new Error("Los metadatos de mockups no coinciden"), {
+      status: 400,
+    });
   }
 
-  let product = null;
-
-  if (productId && mongoose.Types.ObjectId.isValid(productId)) {
-    product = await ProdigiProduct.findById(productId).lean();
-  } else if (productSku) {
-    product = await ProdigiProduct.findOne({ sku: String(productSku).trim().toUpperCase() }).lean();
-  }
-
-  if (!product) {
-    return {
-      error: {
-        status: 400,
-        message: "El producto solicitado no está disponible",
-      },
+  const tempIdMap = new Map();
+  const newImages = files.map((file, index) => {
+    const tempId = meta[index]?.tempId;
+    const record = {
+      _id: new mongoose.Types.ObjectId(),
+      url: `/uploads/${file.filename}`,
+      label: file.originalname,
     };
+    if (tempId) {
+      tempIdMap.set(tempId, record._id);
+    }
+    return record;
+  });
+
+  variant.mockupImages.push(...newImages);
+
+  return { newImages, tempIdMap };
+};
+
+const applyKeepMockupImages = (variant, keepIds = []) => {
+  if (!Array.isArray(keepIds) || keepIds.length === 0) {
+    const removed = [...variant.mockupImages];
+    variant.mockupImages = [];
+    removed.forEach((image) => removeLocalFile(image.url));
+    return;
   }
 
-  const assignedProductIds = (photo.prodigiProducts || []).map((id) => id.toString());
-  if (!assignedProductIds.includes(product._id.toString())) {
-    return {
-      error: {
-        status: 400,
-        message: "El producto no está asignado a esta fotografía",
-      },
-    };
-  }
+  const keepSet = new Set(keepIds.map((id) => id.toString()));
+  const removed = variant.mockupImages.filter(
+    (image) => !keepSet.has(image._id.toString())
+  );
+  removed.forEach((image) => removeLocalFile(image.url));
+  variant.mockupImages = variant.mockupImages.filter((image) =>
+    keepSet.has(image._id.toString())
+  );
+};
 
-  return { photo, product };
+const applyColorOptions = (variant, colorOptionsPayload, tempIdMap) => {
+  const imageIdSet = new Set(
+    variant.mockupImages.map((image) => image._id.toString())
+  );
+
+  const normalized = Array.isArray(colorOptionsPayload)
+    ? colorOptionsPayload
+    : [];
+
+  variant.colorOptions = normalized
+    .map((option) => {
+      if (!option || !option.code) return null;
+
+      const refs = Array.isArray(option.mockupImageRefs)
+        ? option.mockupImageRefs
+        : [];
+
+      const resolvedRefs = refs
+        .map((ref) => {
+          if (!ref) return null;
+          if (tempIdMap.has(ref)) {
+            return tempIdMap.get(ref);
+          }
+          if (mongoose.Types.ObjectId.isValid(ref)) {
+            return new mongoose.Types.ObjectId(ref);
+          }
+          return null;
+        })
+        .filter((ref) => ref && imageIdSet.has(ref.toString()));
+
+      return {
+        code: String(option.code).trim().toUpperCase(),
+        name: option.name ? String(option.name).trim() : undefined,
+        assetUrl: option.assetUrl || undefined,
+        mockupImageRefs: resolvedRefs,
+      };
+    })
+    .filter(Boolean);
+};
+
+const listCatalogProducts = async (req, res) => {
+  try {
+    const products = await ProdigiCatalogProduct.find()
+      .sort({ createdAt: -1 })
+      .lean();
+    res.json(products);
+  } catch (error) {
+    console.error("Error listing catalog products", error);
+    res
+      .status(500)
+      .json({ error: "No se pudieron obtener los productos del catálogo" });
+  }
+};
+
+const createCatalogProduct = async (req, res) => {
+  try {
+    const {
+      sku,
+      name,
+      description,
+      basePrice,
+      currency,
+      defaultSizing,
+      availableColors,
+      attributes,
+    } = req.body || {};
+
+    if (!sku || !name) {
+      return res.status(400).json({ error: "SKU y nombre son obligatorios" });
+    }
+
+    const product = new ProdigiCatalogProduct({
+      sku: String(sku).trim().toUpperCase(),
+      name: String(name).trim(),
+      description: description ? String(description).trim() : undefined,
+      basePrice: basePrice === undefined ? undefined : Number(basePrice),
+      currency: currency ? String(currency).trim().toUpperCase() : undefined,
+      defaultSizing: defaultSizing ? String(defaultSizing).trim() : undefined,
+      availableColors: parseJSON(availableColors, []),
+      attributes: parseJSON(attributes, undefined),
+    });
+
+    await product.save();
+
+    res.status(201).json(product.toObject());
+  } catch (error) {
+    console.error("Error creating catalog product", error);
+    if (error.code === 11000) {
+      return res.status(409).json({ error: "Ya existe un producto con ese SKU" });
+    }
+    res
+      .status(500)
+      .json({ error: "No se pudo crear el producto del catálogo" });
+  }
+};
+
+const updateCatalogProduct = async (req, res) => {
+  try {
+    const { catalogProductId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(catalogProductId)) {
+      return res.status(400).json({ error: "catalogProductId inválido" });
+    }
+
+    const product = await ProdigiCatalogProduct.findById(catalogProductId);
+    if (!product) {
+      return res.status(404).json({ error: "Producto no encontrado" });
+    }
+
+    const {
+      sku,
+      name,
+      description,
+      basePrice,
+      currency,
+      defaultSizing,
+      availableColors,
+      attributes,
+    } = req.body || {};
+
+    if (sku) {
+      product.sku = String(sku).trim().toUpperCase();
+    }
+    if (name) {
+      product.name = String(name).trim();
+    }
+    if (description !== undefined) {
+      product.description = description ? String(description).trim() : "";
+    }
+    if (basePrice !== undefined) {
+      const value = Number(basePrice);
+      if (!Number.isNaN(value)) {
+        product.basePrice = value;
+      }
+    }
+    if (currency) {
+      product.currency = String(currency).trim().toUpperCase();
+    }
+    if (defaultSizing !== undefined) {
+      product.defaultSizing = defaultSizing ? String(defaultSizing).trim() : "";
+    }
+    if (availableColors !== undefined) {
+      product.availableColors = parseJSON(availableColors, []);
+    }
+    if (attributes !== undefined) {
+      product.attributes = parseJSON(attributes, undefined);
+    }
+
+    await product.save();
+
+    res.json(product.toObject());
+  } catch (error) {
+    console.error("Error updating catalog product", error);
+    if (error.code === 11000) {
+      return res.status(409).json({ error: "Ya existe un producto con ese SKU" });
+    }
+    res
+      .status(500)
+      .json({ error: "No se pudo actualizar el producto del catálogo" });
+  }
+};
+
+const deleteCatalogProduct = async (req, res) => {
+  try {
+    const { catalogProductId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(catalogProductId)) {
+      return res.status(400).json({ error: "catalogProductId inválido" });
+    }
+
+    const variantsCount = await PhotoProdigiVariant.countDocuments({
+      catalogProduct: catalogProductId,
+    });
+
+    if (variantsCount > 0) {
+      return res.status(409).json({
+        error:
+          "No puedes eliminar este producto porque está asociado a una o más fotografías",
+      });
+    }
+
+    await ProdigiCatalogProduct.findByIdAndDelete(catalogProductId);
+    res.status(204).send();
+  } catch (error) {
+    console.error("Error deleting catalog product", error);
+    res
+      .status(500)
+      .json({ error: "No se pudo eliminar el producto del catálogo" });
+  }
+};
+
+const listPhotoVariants = async (req, res) => {
+  try {
+    const { photoId } = req.params;
+    const { photo, error } = await ensurePhotoAccessible(photoId);
+    if (error) {
+      return res.status(error.status).json({ error: error.message });
+    }
+
+    const variants = await PhotoProdigiVariant.find({ photo: photo._id })
+      .populate("catalogProduct")
+      .sort({ createdAt: -1 });
+
+    const payload = variants
+      .map((variant) => buildVariantResponse(variant, { includeInactive: true }))
+      .filter(Boolean);
+
+    res.json(payload);
+  } catch (error) {
+    console.error("Error listing photo variants", error);
+    res
+      .status(500)
+      .json({ error: "No se pudieron obtener las variantes de esta fotografía" });
+  }
+};
+
+const createPhotoVariant = async (req, res) => {
+  try {
+    const { photoId } = req.params;
+    const { photo, error } = await ensurePhotoAccessible(photoId);
+    if (error) {
+      return res.status(error.status).json({ error: error.message });
+    }
+
+    const {
+      catalogProductId,
+      displayName,
+      description,
+      retailPrice,
+      currency,
+      sizing,
+      assetUrl,
+      isActive,
+      colorOptions,
+      keepMockupImageIds,
+      newMockupMeta,
+    } = req.body || {};
+
+    if (!catalogProductId || !mongoose.Types.ObjectId.isValid(catalogProductId)) {
+      return res.status(400).json({ error: "catalogProductId es obligatorio" });
+    }
+
+    const catalogProduct = await ProdigiCatalogProduct.findById(
+      catalogProductId
+    );
+
+    if (!catalogProduct) {
+      return res.status(404).json({ error: "Producto de catálogo no encontrado" });
+    }
+
+    const variant = new PhotoProdigiVariant({
+      photo: photo._id,
+      catalogProduct: catalogProduct._id,
+    });
+
+    variant.displayName = displayName ? String(displayName).trim() : undefined;
+    variant.description = description ? String(description).trim() : undefined;
+    if (retailPrice !== undefined && retailPrice !== "") {
+      const value = Number(retailPrice);
+      if (!Number.isNaN(value)) variant.retailPrice = value;
+    }
+    variant.currency = currency ? String(currency).trim().toUpperCase() : variant.currency;
+    variant.sizing = sizing ? String(sizing).trim() : undefined;
+    variant.assetUrl = assetUrl ? String(assetUrl).trim() : undefined;
+    variant.isActive = isActive !== undefined ? isActive === "true" || isActive === true : true;
+
+    const keepIds = parseJSON(keepMockupImageIds, []);
+    applyKeepMockupImages(variant, keepIds);
+
+    const mockupFiles = getMockupFiles(req);
+    const { newImages, tempIdMap } = processVariantFiles(
+      variant,
+      mockupFiles,
+      parseJSON(newMockupMeta, [])
+    );
+
+    const colorOptionsPayload = parseJSON(colorOptions, []);
+    applyColorOptions(variant, colorOptionsPayload, tempIdMap);
+
+    await variant.save();
+
+    const populated = await variant.populate("catalogProduct");
+    res.status(201).json(
+      buildVariantResponse(populated, { includeInactive: true })
+    );
+  } catch (error) {
+    console.error("Error creating photo variant", error);
+    const status = error.status || 500;
+    res
+      .status(status)
+      .json({ error: "No se pudo crear la variante para esta fotografía" });
+  }
+};
+
+const updatePhotoVariant = async (req, res) => {
+  try {
+    const { photoId, variantId } = req.params;
+    const { photo, error } = await ensurePhotoAccessible(photoId);
+    if (error) {
+      return res.status(error.status).json({ error: error.message });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(variantId)) {
+      return res.status(400).json({ error: "variantId inválido" });
+    }
+
+    const variant = await PhotoProdigiVariant.findOne({
+      _id: variantId,
+      photo: photo._id,
+    });
+
+    if (!variant) {
+      return res.status(404).json({ error: "Variante no encontrada" });
+    }
+
+    const {
+      catalogProductId,
+      displayName,
+      description,
+      retailPrice,
+      currency,
+      sizing,
+      assetUrl,
+      isActive,
+      colorOptions,
+      keepMockupImageIds,
+      newMockupMeta,
+    } = req.body || {};
+
+    if (catalogProductId && mongoose.Types.ObjectId.isValid(catalogProductId)) {
+      const catalogProduct = await ProdigiCatalogProduct.findById(
+        catalogProductId
+      );
+      if (!catalogProduct) {
+        return res.status(404).json({ error: "Producto de catálogo no encontrado" });
+      }
+      variant.catalogProduct = catalogProduct._id;
+    }
+
+    if (displayName !== undefined) {
+      variant.displayName = displayName ? String(displayName).trim() : "";
+    }
+    if (description !== undefined) {
+      variant.description = description ? String(description).trim() : "";
+    }
+    if (retailPrice !== undefined) {
+      if (retailPrice === "" || retailPrice === null) {
+        variant.retailPrice = undefined;
+      } else {
+        const value = Number(retailPrice);
+        if (!Number.isNaN(value)) variant.retailPrice = value;
+      }
+    }
+    if (currency !== undefined) {
+      variant.currency = currency ? String(currency).trim().toUpperCase() : "";
+    }
+    if (sizing !== undefined) {
+      variant.sizing = sizing ? String(sizing).trim() : "";
+    }
+    if (assetUrl !== undefined) {
+      variant.assetUrl = assetUrl ? String(assetUrl).trim() : "";
+    }
+    if (isActive !== undefined) {
+      variant.isActive = isActive === "true" || isActive === true;
+    }
+
+    const keepIds = parseJSON(keepMockupImageIds, []);
+    applyKeepMockupImages(variant, keepIds);
+
+    const mockupFiles = getMockupFiles(req);
+    const { tempIdMap } = processVariantFiles(
+      variant,
+      mockupFiles,
+      parseJSON(newMockupMeta, [])
+    );
+
+    const colorOptionsPayload = parseJSON(colorOptions, []);
+    applyColorOptions(variant, colorOptionsPayload, tempIdMap);
+
+    await variant.save();
+    const populated = await variant.populate("catalogProduct");
+
+    res.json(buildVariantResponse(populated, { includeInactive: true }));
+  } catch (error) {
+    console.error("Error updating photo variant", error);
+    const status = error.status || 500;
+    res
+      .status(status)
+      .json({ error: "No se pudo actualizar la variante" });
+  }
+};
+
+const deletePhotoVariant = async (req, res) => {
+  try {
+    const { photoId, variantId } = req.params;
+    const { photo, error } = await ensurePhotoAccessible(photoId);
+    if (error) {
+      return res.status(error.status).json({ error: error.message });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(variantId)) {
+      return res.status(400).json({ error: "variantId inválido" });
+    }
+
+    const variant = await PhotoProdigiVariant.findOne({
+      _id: variantId,
+      photo: photo._id,
+    });
+
+    if (!variant) {
+      return res.status(404).json({ error: "Variante no encontrada" });
+    }
+
+    const mockups = [...variant.mockupImages];
+    await variant.deleteOne();
+    mockups.forEach((image) => removeLocalFile(image.url));
+
+    res.status(204).send();
+  } catch (error) {
+    console.error("Error deleting photo variant", error);
+    res
+      .status(500)
+      .json({ error: "No se pudo eliminar la variante" });
+  }
 };
 
 const listProducts = async (req, res) => {
   try {
     const { photoId } = req.query;
-
-    if (photoId) {
-      const photo = await Photo.findById(photoId)
-        .populate("prodigiProducts")
-        .lean();
-
-      if (!photo) {
-        return res.status(404).json({ error: "Fotografía no encontrada" });
-      }
-
-      return res.json(photo.prodigiProducts || []);
+    if (!photoId || !mongoose.Types.ObjectId.isValid(photoId)) {
+      return res.status(400).json({ error: "photoId es obligatorio" });
     }
 
-    const products = await ProdigiProduct.find()
-      .sort({ createdAt: -1 })
-      .lean();
+    const variants = await PhotoProdigiVariant.find({
+      photo: photoId,
+      isActive: true,
+    })
+      .populate("catalogProduct")
+      .sort({ createdAt: -1 });
 
-    return res.json(products);
+    const payload = variants
+      .map((variant) => buildVariantResponse(variant))
+      .filter(Boolean);
+
+    res.json(payload);
   } catch (error) {
     console.error("Error listing Prodigi products", error);
-    return res
+    res
       .status(500)
-      .json({ error: "No se pudieron obtener los productos de Prodigi" });
+      .json({ error: "No se pudieron obtener los productos disponibles" });
   }
+};
+
+const loadVariantForPhoto = async ({ photoId, variantId, colorCode }) => {
+  if (!mongoose.Types.ObjectId.isValid(photoId)) {
+    return { error: { status: 400, message: "photoId inválido" } };
+  }
+  if (!mongoose.Types.ObjectId.isValid(variantId)) {
+    return { error: { status: 400, message: "variantId inválido" } };
+  }
+
+  const [photo, variant] = await Promise.all([
+    Photo.findById(photoId).lean(),
+    PhotoProdigiVariant.findOne({
+      _id: variantId,
+      photo: photoId,
+      isActive: true,
+    }).populate("catalogProduct"),
+  ]);
+
+  if (!photo) {
+    return { error: { status: 404, message: "Fotografía no encontrada" } };
+  }
+  if (!variant) {
+    return { error: { status: 404, message: "Variante no disponible" } };
+  }
+
+  const colorOptions = Array.isArray(variant.colorOptions)
+    ? variant.colorOptions
+    : [];
+
+  let selectedColor = null;
+  if (colorOptions.length > 0) {
+    const normalizedCode = colorCode
+      ? String(colorCode).trim().toUpperCase()
+      : null;
+
+    if (normalizedCode) {
+      selectedColor = colorOptions.find(
+        (option) => option.code === normalizedCode
+      );
+      if (!selectedColor) {
+        return {
+          error: {
+            status: 400,
+            message: "El color seleccionado no está disponible",
+          },
+        };
+      }
+    } else {
+      selectedColor = colorOptions[0];
+    }
+  }
+
+  return { photo, variant, selectedColor };
 };
 
 const getQuote = async (req, res) => {
@@ -204,17 +763,17 @@ const getQuote = async (req, res) => {
   try {
     const {
       photoId,
-      productId,
-      productSku,
+      variantId,
+      colorCode,
       copies,
       destinationCountryCode,
       shippingMethod,
     } = req.body || {};
 
-    const { photo, product, error } = await loadPhotoAndProduct({
+    const { photo, variant, selectedColor, error } = await loadVariantForPhoto({
       photoId,
-      productId,
-      productSku,
+      variantId,
+      colorCode,
     });
 
     if (error) {
@@ -222,18 +781,39 @@ const getQuote = async (req, res) => {
     }
 
     const copiesToPrint = sanitizeInt(copies, 1);
+    const sku = variant.catalogProduct?.sku;
+
+    if (!sku) {
+      return res
+        .status(500)
+        .json({ error: "El producto de catálogo no tiene un SKU configurado" });
+    }
+
+    const assetUrl =
+      selectedColor?.assetUrl ||
+      variant.assetUrl ||
+      buildAssetUrl(photo.imagePath);
+
+    if (!assetUrl) {
+      return res.status(400).json({
+        error:
+          "No hay un assetUrl disponible para esta variante. Configura uno en Content Management.",
+      });
+    }
 
     const quotePayload = {
       shippingMethod: shippingMethod || DEFAULT_SHIPPING_METHOD,
       destinationCountryCode: (destinationCountryCode || "ES").toUpperCase(),
       items: [
         {
-          sku: product.sku,
+          sku,
           copies: copiesToPrint,
-          sizing: product.sizing || "fillPrintArea",
+          sizing:
+            variant.sizing || variant.catalogProduct?.defaultSizing || "fillPrintArea",
           assets: [
             {
               printArea: "default",
+              url: assetUrl,
             },
           ],
         },
@@ -245,16 +825,24 @@ const getQuote = async (req, res) => {
       body: quotePayload,
     });
 
-    return res.status(200).json({
+    res.status(200).json({
       outcome: prodigiResponse?.outcome,
       quotes: prodigiResponse?.quotes,
-      photo: { id: photo._id, title: photo.title },
-      product: { id: product._id, sku: product.sku },
+      variant: {
+        id: variant._id.toString(),
+        sku,
+      },
+      color: selectedColor
+        ? {
+            code: selectedColor.code,
+            name: selectedColor.name,
+          }
+        : null,
     });
   } catch (error) {
     console.error("Error getting Prodigi quote", error);
     const status = error.status || 500;
-    return res.status(status).json({
+    res.status(status).json({
       error: "No se pudo obtener la cotización de Prodigi",
       details: error.data || error.message,
     });
@@ -269,17 +857,41 @@ const createOrder = async (req, res) => {
   }
 
   try {
-    const { photoId, productId, productSku, copies, recipient, shippingMethod } =
-      req.body || {};
-
-    const { photo, product, error } = await loadPhotoAndProduct({
+    const {
       photoId,
-      productId,
-      productSku,
+      variantId,
+      colorCode,
+      copies,
+      recipient,
+      shippingMethod,
+    } = req.body || {};
+
+    const { photo, variant, selectedColor, error } = await loadVariantForPhoto({
+      photoId,
+      variantId,
+      colorCode,
     });
 
     if (error) {
       return res.status(error.status).json({ error: error.message });
+    }
+
+    if (!variant.catalogProduct?.sku) {
+      return res
+        .status(500)
+        .json({ error: "El producto de catálogo no tiene un SKU configurado" });
+    }
+
+    const assetUrl =
+      selectedColor?.assetUrl ||
+      variant.assetUrl ||
+      buildAssetUrl(photo.imagePath);
+
+    if (!assetUrl) {
+      return res.status(400).json({
+        error:
+          "No hay un assetUrl disponible para esta variante. Configura uno en Content Management.",
+      });
     }
 
     let normalizedRecipient;
@@ -288,13 +900,6 @@ const createOrder = async (req, res) => {
     } catch (recipientError) {
       const status = recipientError.status || 500;
       return res.status(status).json({ error: recipientError.message });
-    }
-
-    let assetUrl;
-    try {
-      assetUrl = buildAssetUrl(photo.imagePath);
-    } catch (assetError) {
-      return res.status(500).json({ error: assetError.message });
     }
 
     const copiesToPrint = sanitizeInt(copies, 1);
@@ -307,9 +912,10 @@ const createOrder = async (req, res) => {
       items: [
         {
           merchantReference: `item-${merchantReference}`,
-          sku: product.sku,
+          sku: variant.catalogProduct.sku,
           copies: copiesToPrint,
-          sizing: product.sizing || "fillPrintArea",
+          sizing:
+            variant.sizing || variant.catalogProduct?.defaultSizing || "fillPrintArea",
           assets: [
             {
               printArea: "default",
@@ -317,8 +923,9 @@ const createOrder = async (req, res) => {
             },
           ],
           metadata: {
-            productId: String(product._id),
-            productName: product.name,
+            variantId: String(variant._id),
+            variantName: variant.displayName || variant.catalogProduct.name,
+            colorCode: selectedColor?.code || null,
           },
         },
       ],
@@ -328,10 +935,17 @@ const createOrder = async (req, res) => {
           id: String(photo._id),
           title: photo.title,
         },
-        product: {
-          id: String(product._id),
-          sku: product.sku,
+        variant: {
+          id: String(variant._id),
+          sku: variant.catalogProduct.sku,
+          name: variant.displayName || variant.catalogProduct.name,
         },
+        color: selectedColor
+          ? {
+              code: selectedColor.code,
+              name: selectedColor.name,
+            }
+          : null,
       },
     };
 
@@ -340,224 +954,43 @@ const createOrder = async (req, res) => {
       body: orderPayload,
     });
 
-    return res.status(201).json({
+    res.status(201).json({
       outcome: prodigiResponse?.outcome,
       order: prodigiResponse?.order,
     });
   } catch (error) {
     console.error("Error creating Prodigi order", error);
     const status = error.status || 500;
-    return res.status(status).json({
+    res.status(status).json({
       error: "No se pudo crear el pedido en Prodigi",
       details: error.data || error.message,
     });
   }
 };
 
-const createProdigiProduct = async (req, res) => {
-  try {
-    const {
-      sku,
-      name,
-      description,
-      retailPrice,
-      currency,
-      sizing,
-    } = req.body || {};
-
-    if (!sku || !name) {
-      return res.status(400).json({
-        error: "sku y name son obligatorios",
-      });
-    }
-
-    const mockupImages = (req.files || []).map(
-      (file) => `/uploads/${file.filename}`
-    );
-
-    const product = new ProdigiProduct({
-      sku: String(sku).trim().toUpperCase(),
-      name: String(name).trim(),
-      description: description ? String(description).trim() : undefined,
-      retailPrice: toNumeric(retailPrice, 0),
-      currency: toCurrencyCode(currency),
-      sizing: toSizingValue(sizing),
-      mockupImages,
+const getProductDetails = async (req, res) => {
+  if (!isProdigiConfigured) {
+    return res.status(503).json({
+      error: "La integración con Prodigi no está configurada todavía.",
     });
-
-    await product.save();
-
-    return res.status(201).json(product.toObject());
-  } catch (error) {
-    console.error("Error creating Prodigi product", error);
-    if (error.code === 11000) {
-      return res.status(409).json({
-        error: "Ya existe un producto con ese SKU",
-      });
-    }
-
-    return res
-      .status(500)
-      .json({ error: "No se pudo crear el producto de Prodigi" });
   }
-};
 
-const updateProdigiProduct = async (req, res) => {
-  try {
-    const { productId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(productId)) {
-      return res.status(400).json({ error: "productId inválido" });
-    }
-
-    const product = await ProdigiProduct.findById(productId);
-    if (!product) {
-      return res.status(404).json({ error: "Producto no encontrado" });
-    }
-
-    const {
-      sku,
-      name,
-      description,
-      retailPrice,
-      currency,
-      sizing,
-      imagesToRemove,
-    } = req.body || {};
-
-    if (sku) {
-      product.sku = String(sku).trim().toUpperCase();
-    }
-    if (name) {
-      product.name = String(name).trim();
-    }
-    if (description !== undefined) {
-      product.description = description ? String(description).trim() : "";
-    }
-    if (retailPrice !== undefined) {
-      product.retailPrice = toNumeric(retailPrice, product.retailPrice || 0);
-    }
-    if (currency) {
-      product.currency = toCurrencyCode(currency, product.currency);
-    }
-    if (sizing) {
-      product.sizing = toSizingValue(sizing, product.sizing);
-    }
-
-    const imagesToRemoveArray = parseArrayFromBody(imagesToRemove);
-    if (imagesToRemoveArray.length) {
-      product.mockupImages = product.mockupImages.filter((imagePath) => {
-        if (imagesToRemoveArray.includes(imagePath)) {
-          removeLocalFile(imagePath);
-          return false;
-        }
-        return true;
-      });
-    }
-
-    const newImages = (req.files || []).map(
-      (file) => `/uploads/${file.filename}`
-    );
-    if (newImages.length) {
-      product.mockupImages.push(...newImages);
-    }
-
-    await product.save();
-
-    return res.json(product.toObject());
-  } catch (error) {
-    console.error("Error updating Prodigi product", error);
-    if (error.code === 11000) {
-      return res.status(409).json({
-        error: "Ya existe un producto con ese SKU",
-      });
-    }
-
-    return res
-      .status(500)
-      .json({ error: "No se pudo actualizar el producto de Prodigi" });
+  const rawSku = req.params?.sku;
+  const sku = rawSku ? String(rawSku).trim() : "";
+  if (!sku) {
+    return res.status(400).json({ error: "SKU es obligatorio" });
   }
-};
 
-const deleteProdigiProduct = async (req, res) => {
   try {
-    const { productId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(productId)) {
-      return res.status(400).json({ error: "productId inválido" });
-    }
-
-    const product = await ProdigiProduct.findById(productId);
-    if (!product) {
-      return res.status(404).json({ error: "Producto no encontrado" });
-    }
-
-    const images = [...(product.mockupImages || [])];
-
-    await Photo.updateMany(
-      { prodigiProducts: product._id },
-      { $pull: { prodigiProducts: product._id } }
-    );
-
-    await product.deleteOne();
-
-    images.forEach(removeLocalFile);
-
-    return res.status(204).send();
+    const product = await prodigiRequest(`/products/${encodeURIComponent(sku)}`);
+    return res.status(200).json(product);
   } catch (error) {
-    console.error("Error deleting Prodigi product", error);
-    return res
-      .status(500)
-      .json({ error: "No se pudo eliminar el producto de Prodigi" });
-  }
-};
-
-const updatePhotoProducts = async (req, res) => {
-  try {
-    const { photoId } = req.params;
-    let { productIds } = req.body || {};
-
-    if (!mongoose.Types.ObjectId.isValid(photoId)) {
-      return res.status(400).json({ error: "photoId inválido" });
-    }
-
-    if (typeof productIds === "string") {
-      productIds = [productIds];
-    }
-    const sanitizedIds = Array.isArray(productIds)
-      ? productIds.filter((id) => mongoose.Types.ObjectId.isValid(id))
-      : [];
-
-    const products = await ProdigiProduct.find({
-      _id: { $in: sanitizedIds },
-    })
-      .select("_id")
-      .lean();
-
-    if (products.length !== sanitizedIds.length) {
-      return res.status(400).json({
-        error: "Algunos productos no existen",
-      });
-    }
-
-    const photo = await Photo.findOneAndUpdate(
-      { _id: photoId, createdBy: req.user.userId },
-      { prodigiProducts: sanitizedIds },
-      { new: true }
-    )
-      .populate("prodigiProducts")
-      .lean();
-
-    if (!photo) {
-      return res
-        .status(404)
-        .json({ error: "Fotografía no encontrada o sin permisos" });
-    }
-
-    return res.json(photo.prodigiProducts || []);
-  } catch (error) {
-    console.error("Error updating photo products", error);
-    return res
-      .status(500)
-      .json({ error: "No se pudieron actualizar los productos" });
+    console.error("Error fetching Prodigi product details", error);
+    const status = error.status || 500;
+    return res.status(status).json({
+      error: "No se pudo obtener la información del producto",
+      details: error.data || error.message,
+    });
   }
 };
 
@@ -565,8 +998,13 @@ module.exports = {
   listProducts,
   getQuote,
   createOrder,
-  createProdigiProduct,
-  updateProdigiProduct,
-  deleteProdigiProduct,
-  updatePhotoProducts,
+  getProductDetails,
+  listCatalogProducts,
+  createCatalogProduct,
+  updateCatalogProduct,
+  deleteCatalogProduct,
+  listPhotoVariants,
+  createPhotoVariant,
+  updatePhotoVariant,
+  deletePhotoVariant,
 };

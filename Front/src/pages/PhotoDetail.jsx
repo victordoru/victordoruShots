@@ -16,17 +16,47 @@ const DetailSkeleton = () => (
   </div>
 );
 
+const formatCurrency = (amount, currencyCode = "EUR") => {
+  const numericAmount = Number(amount);
+  if (Number.isNaN(numericAmount)) {
+    return amount ?? "";
+  }
+
+  try {
+    return new Intl.NumberFormat("es-ES", {
+      style: "currency",
+      currency: currencyCode || "EUR",
+      minimumFractionDigits: 2,
+    }).format(numericAmount);
+  } catch (error) {
+    return `${numericAmount.toFixed(2)} ${currencyCode || ""}`.trim();
+  }
+};
+
+const getColorPreviewStyle = (code) => {
+  if (!code) return {};
+  const candidate = code.startsWith("#") ? code : `#${code}`;
+  if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(candidate)) {
+    return { backgroundColor: candidate };
+  }
+  return { backgroundColor: code };
+};
+
 const PhotoDetail = () => {
   const { photoId } = useParams();
   const navigate = useNavigate();
+
   const [photo, setPhoto] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [prodigiProducts, setProdigiProducts] = useState([]);
-  const [prodigiLoading, setProdigiLoading] = useState(false);
-  const [prodigiError, setProdigiError] = useState(null);
+
+  const [variants, setVariants] = useState([]);
+  const [variantsLoading, setVariantsLoading] = useState(false);
+  const [variantsError, setVariantsError] = useState(null);
+
   const [orderState, setOrderState] = useState({
-    productId: "",
+    variantId: "",
+    colorCode: "",
     copies: 1,
     recipient: {
       name: "",
@@ -40,16 +70,20 @@ const PhotoDetail = () => {
       countryCode: "ES",
     },
   });
+
   const [orderFeedback, setOrderFeedback] = useState({
     submitting: false,
     success: null,
     error: null,
   });
+
   const [quoteState, setQuoteState] = useState({
     loading: false,
     quote: null,
     error: null,
   });
+
+  const imageBase = import.meta.env.VITE_URL_BACKEND;
 
   useEffect(() => {
     const fetchPhoto = async () => {
@@ -69,44 +103,109 @@ const PhotoDetail = () => {
   }, [photoId]);
 
   useEffect(() => {
-    const fetchProdigiProducts = async () => {
+    const fetchVariants = async () => {
       if (!photoId) return;
       try {
-        setProdigiLoading(true);
+        setVariantsLoading(true);
         const { data } = await api.get("/prodigi/products", {
           params: { photoId },
         });
-        const productsArray = Array.isArray(data) ? data : [];
-        setProdigiProducts(productsArray);
-        setProdigiError(null);
+        const payload = Array.isArray(data) ? data : [];
+        setVariants(payload);
+        setVariantsError(null);
 
-        if (productsArray.length > 0) {
+        if (payload.length > 0) {
           setOrderState((prev) => {
-            const currentId = String(prev.productId || "");
-            const exists = productsArray.some(
-              (product) => String(product?._id) === currentId
-            );
+            const currentVariantId = String(prev.variantId || "");
+            const exists = payload.some((item) => item.id === currentVariantId);
+            const nextVariantId = exists ? currentVariantId : payload[0].id;
             return {
               ...prev,
-              productId: exists ? currentId : productsArray[0]?._id || "",
+              variantId: nextVariantId,
             };
           });
         } else {
-          setOrderState((prev) => ({ ...prev, productId: "" }));
+          setOrderState((prev) => ({ ...prev, variantId: "", colorCode: "" }));
         }
       } catch (err) {
-        console.error("Error fetching Prodigi products", err);
+        console.error("Error fetching Prodigi variants", err);
         const message =
           err.response?.data?.error ||
           "No pudimos cargar las opciones de impresión en este momento.";
-        setProdigiError(message);
+        setVariantsError(message);
+        setVariants([]);
       } finally {
-        setProdigiLoading(false);
+        setVariantsLoading(false);
       }
     };
 
-    fetchProdigiProducts();
+    fetchVariants();
   }, [photoId]);
+
+  const selectedVariant = useMemo(() => {
+    if (!orderState.variantId) return null;
+    return (
+      variants.find((variant) => variant.id === orderState.variantId) || null
+    );
+  }, [variants, orderState.variantId]);
+
+  useEffect(() => {
+    if (!selectedVariant) {
+      if (orderState.colorCode) {
+        setOrderState((prev) => ({ ...prev, colorCode: "" }));
+      }
+      return;
+    }
+
+    const colors = Array.isArray(selectedVariant.colorOptions)
+      ? selectedVariant.colorOptions
+      : [];
+
+    if (colors.length === 0) {
+      if (orderState.colorCode) {
+        setOrderState((prev) => ({ ...prev, colorCode: "" }));
+      }
+      return;
+    }
+
+    const normalizedFirstCode = colors[0].code
+      ? String(colors[0].code).toUpperCase()
+      : "";
+    const exists = colors.some((color) => color.code === orderState.colorCode);
+    if (!exists) {
+      setOrderState((prev) => ({ ...prev, colorCode: normalizedFirstCode }));
+    }
+  }, [selectedVariant, orderState.colorCode]);
+
+  const selectedColorData = useMemo(() => {
+    if (!selectedVariant || !orderState.colorCode) return null;
+    return (
+      selectedVariant.colorOptions?.find(
+        (option) => option.code === orderState.colorCode
+      ) || null
+    );
+  }, [selectedVariant, orderState.colorCode]);
+
+  const displayedMockups = useMemo(() => {
+    if (!selectedVariant) return [];
+
+    if (selectedColorData?.mockupImages?.length) {
+      return selectedColorData.mockupImages;
+    }
+
+    return selectedVariant.mockupImages || [];
+  }, [selectedVariant, selectedColorData]);
+
+  const handleSelectVariant = (variantId) => {
+    setOrderState((prev) => ({ ...prev, variantId, colorCode: "" }));
+    setOrderFeedback({ submitting: false, success: null, error: null });
+  };
+
+  const handleSelectColor = (colorCode) => {
+    const normalized = colorCode ? String(colorCode).toUpperCase() : "";
+    setOrderState((prev) => ({ ...prev, colorCode: normalized }));
+    setOrderFeedback({ submitting: false, success: null, error: null });
+  };
 
   const handleOrderFieldChange = (field, value) => {
     setOrderState((prev) => {
@@ -138,16 +237,21 @@ const PhotoDetail = () => {
   const handleOrderSubmit = async (event) => {
     event.preventDefault();
 
-    if (!photo?._id || !orderState.productId) {
+    if (!photo?._id || !orderState.variantId) {
       return;
     }
 
     setOrderFeedback({ submitting: true, success: null, error: null });
 
     try {
+      const colorCodePayload = selectedVariant?.colorOptions?.length
+        ? orderState.colorCode || selectedVariant.colorOptions[0]?.code
+        : undefined;
+
       const { data } = await api.post("/prodigi/orders", {
         photoId: photo._id,
-        productId: orderState.productId,
+        variantId: orderState.variantId,
+        colorCode: colorCodePayload,
         copies: orderState.copies,
         recipient: orderState.recipient,
       });
@@ -168,37 +272,8 @@ const PhotoDetail = () => {
     }
   };
 
-  const imageBase = import.meta.env.VITE_URL_BACKEND;
-  const baseInputClasses =
-    "w-full rounded-xl border border-white/20 bg-black/30 px-3 py-2 text-xs text-white placeholder:text-white/40 focus:border-white/40 focus:outline-none focus:ring-0";
-  const formatCurrency = (amount, currencyCode = "EUR") => {
-    const numericAmount = Number(amount);
-    if (Number.isNaN(numericAmount)) {
-      return amount ?? "";
-    }
-
-    try {
-      return new Intl.NumberFormat("es-ES", {
-        style: "currency",
-        currency: currencyCode || "EUR",
-        minimumFractionDigits: 2,
-      }).format(numericAmount);
-    } catch (error) {
-      return `${numericAmount.toFixed(2)} ${currencyCode || ""}`.trim();
-    }
-  };
-
-  const selectedProduct = useMemo(() => {
-    if (!orderState.productId) return null;
-    return (
-      prodigiProducts.find(
-        (product) => String(product?._id) === String(orderState.productId)
-      ) || null
-    );
-  }, [prodigiProducts, orderState.productId]);
-
   useEffect(() => {
-    if (!photo?._id || !orderState.productId) {
+    if (!photo?._id || !orderState.variantId) {
       setQuoteState({ loading: false, quote: null, error: null });
       return;
     }
@@ -208,11 +283,16 @@ const PhotoDetail = () => {
     const fetchQuote = async () => {
       setQuoteState({ loading: true, quote: null, error: null });
       try {
+        const colorCodePayload = selectedVariant?.colorOptions?.length
+          ? orderState.colorCode || selectedVariant.colorOptions[0]?.code
+          : undefined;
+
         const { data } = await api.post(
           "/prodigi/quotes",
           {
             photoId: photo._id,
-            productId: orderState.productId,
+            variantId: orderState.variantId,
+            colorCode: colorCodePayload,
             copies: orderState.copies,
             destinationCountryCode:
               orderState.recipient.countryCode || "ES",
@@ -241,7 +321,9 @@ const PhotoDetail = () => {
     return () => controller.abort();
   }, [
     photo?._id,
-    orderState.productId,
+    orderState.variantId,
+    selectedVariant,
+    orderState.colorCode,
     orderState.copies,
     orderState.recipient.countryCode,
   ]);
@@ -331,7 +413,7 @@ const PhotoDetail = () => {
 
         <aside className="flex flex-col gap-4 rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur">
           <div>
-            <p className="text-xs uppercase tracking-[0.3em] text-white/60">Precio</p>
+            <p className="text-xs uppercase tracking-[0.3em] text-white/60">Precio referencia</p>
             <p className="mt-2 text-2xl font-semibold">
               {price ? `${Number(price).toFixed(2)} €` : "Consultar"}
             </p>
@@ -367,11 +449,11 @@ const PhotoDetail = () => {
               Compra una impresión
             </h2>
 
-            {prodigiLoading ? (
+            {variantsLoading ? (
               <p className="text-white/60">Cargando opciones de impresión...</p>
-            ) : prodigiError ? (
-              <p className="text-red-300">{prodigiError}</p>
-            ) : prodigiProducts.length === 0 ? (
+            ) : variantsError ? (
+              <p className="text-red-300">{variantsError}</p>
+            ) : variants.length === 0 ? (
               <p className="text-white/60">
                 Pronto habilitaremos la compra de impresiones para esta foto.
               </p>
@@ -382,72 +464,110 @@ const PhotoDetail = () => {
                     Producto
                   </label>
                   <select
-                    className={baseInputClasses}
-                    value={orderState.productId}
-                    onChange={(event) =>
-                      handleOrderFieldChange("productId", event.target.value)
-                    }
+                    className="w-full rounded-xl border border-white/20 bg-black/30 px-3 py-2 text-xs text-white focus:border-white/40 focus:outline-none"
+                    value={orderState.variantId}
+                    onChange={(event) => handleSelectVariant(event.target.value)}
                   >
-                    {prodigiProducts.map((product) => (
-                      <option key={product._id} value={product._id}>
-                        {product.name}
+                    {variants.map((variant) => (
+                      <option key={variant.id} value={variant.id}>
+                        {variant.displayName || variant.catalogProduct?.name}
                       </option>
                     ))}
                   </select>
-                  <p className="text-[0.6rem] text-white/40">
-                    {selectedProduct?.description || ""}
-                  </p>
-                  {selectedProduct?.retailPrice ? (
+                  {selectedVariant?.description && (
                     <p className="text-[0.6rem] text-white/50">
-                      Precio base sugerido:
+                      {selectedVariant.description}
+                    </p>
+                  )}
+                  {selectedVariant?.retailPrice !== undefined && (
+                    <p className="text-[0.6rem] text-white/50">
+                      Precio sugerido:
                       <span className="ml-1 text-white">
                         {formatCurrency(
-                          selectedProduct.retailPrice,
-                          selectedProduct.currency
+                          selectedVariant.retailPrice,
+                          selectedVariant.currency
                         )}
                       </span>
                     </p>
-                  ) : null}
-                  {quoteState.loading ? (
-                    <p className="text-[0.6rem] text-white/50">
-                      Calculando precio...
-                    </p>
-                  ) : quoteState.error ? (
-                    <p className="text-[0.6rem] text-red-300">
-                      {quoteState.error}
-                    </p>
-                  ) : quoteState.quote ? (
-                    <div className="text-[0.6rem] text-white/60">
-                      <p>
-                        Total estimado:
-                        <span className="ml-1 text-white">
-                          {formatCurrency(quoteTotalAmount, quoteCurrency)}
-                        </span>
-                      </p>
-                      <p className="text-white/40">
-                        Productos: {formatCurrency(quoteCostItems?.amount, quoteCostItems?.currency)} · Envío:
-                        {" "}
-                        {formatCurrency(
-                          quoteCostShipping?.amount,
-                          quoteCostShipping?.currency
-                        )}
-                      </p>
-                    </div>
-                  ) : null}
-                  {selectedProduct?.mockupImages?.length ? (
-                    <div className="mt-2 flex gap-2 overflow-x-auto">
-                      {selectedProduct.mockupImages.map((imagePath) => (
-                        <img
-                          key={imagePath}
-                          src={`${imageBase}${imagePath}`}
-                          alt={`Mockup ${selectedProduct.name}`}
-                          className="h-16 w-24 flex-none rounded-lg border border-white/10 object-cover"
-                          loading="lazy"
-                        />
-                      ))}
-                    </div>
-                  ) : null}
+                  )}
                 </div>
+
+                {selectedVariant?.colorOptions?.length ? (
+                  <div className="flex flex-col gap-2">
+                    <p className="text-[0.6rem] uppercase tracking-[0.3em] text-white/50">
+                      Colores disponibles
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {selectedVariant.colorOptions.map((color) => {
+                        const isSelected = color.code === orderState.colorCode;
+                        return (
+                          <button
+                            type="button"
+                            key={color.code}
+                            onClick={() => handleSelectColor(color.code)}
+                            className={`flex items-center gap-2 rounded-full border px-4 py-2 text-[0.6rem] uppercase tracking-[0.3em] transition ${
+                              isSelected
+                                ? "border-white bg-white/20 text-white"
+                                : "border-white/30 text-white/70 hover:border-white/50 hover:text-white"
+                            }`}
+                            aria-pressed={isSelected}
+                          >
+                            <span
+                              className="h-3 w-3 rounded-full border border-white/30"
+                              style={getColorPreviewStyle(color.code)}
+                            />
+                            <span>{color.name || color.code}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {selectedColorData?.assetUrl && (
+                      <p className="text-[0.6rem] text-white/40">
+                        Esta combinación usa un asset específico para {selectedColorData.name || selectedColorData.code}.
+                      </p>
+                    )}
+                  </div>
+                ) : null}
+
+                {displayedMockups.length > 0 ? (
+                  <div className="flex gap-2 overflow-x-auto">
+                    {displayedMockups.map((image) => (
+                      <img
+                        key={image.id}
+                        src={`${image.url.startsWith("http") ? "" : imageBase}${image.url}`}
+                        alt={selectedVariant?.displayName || "Mockup"}
+                        className="h-16 w-24 flex-none rounded-lg border border-white/10 object-cover"
+                        loading="lazy"
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[0.6rem] text-white/40">
+                    Aún no hay mockups para esta selección.
+                  </p>
+                )}
+
+                {quoteState.loading ? (
+                  <p className="text-[0.6rem] text-white/50">Calculando precio...</p>
+                ) : quoteState.error ? (
+                  <p className="text-[0.6rem] text-red-300">{quoteState.error}</p>
+                ) : quoteState.quote ? (
+                  <div className="text-[0.6rem] text-white/60">
+                    <p>
+                      Total estimado:
+                      <span className="ml-1 text-white">
+                        {formatCurrency(quoteTotalAmount, quoteCurrency)}
+                      </span>
+                    </p>
+                    <p className="text-white/40">
+                      Productos: {formatCurrency(quoteCostItems?.amount, quoteCostItems?.currency)} · Envío:{" "}
+                      {formatCurrency(
+                        quoteCostShipping?.amount,
+                        quoteCostShipping?.currency
+                      )}
+                    </p>
+                  </div>
+                ) : null}
 
                 <div className="flex flex-col gap-1">
                   <label className="text-[0.6rem] uppercase tracking-[0.3em] text-white/50">
@@ -461,7 +581,7 @@ const PhotoDetail = () => {
                     onChange={(event) =>
                       handleOrderFieldChange("copies", event.target.value)
                     }
-                    className={baseInputClasses}
+                    className="w-full rounded-xl border border-white/20 bg-black/30 px-3 py-2 text-xs text-white focus:border-white/40 focus:outline-none"
                   />
                 </div>
 
@@ -477,7 +597,7 @@ const PhotoDetail = () => {
                       onChange={(event) =>
                         handleRecipientChange("name", event.target.value)
                       }
-                      className={baseInputClasses}
+                      className="w-full rounded-xl border border-white/20 bg-black/30 px-3 py-2 text-xs text-white focus:border-white/40 focus:outline-none"
                     />
                   </div>
                   <div className="flex flex-col gap-1">
@@ -491,7 +611,7 @@ const PhotoDetail = () => {
                       onChange={(event) =>
                         handleRecipientChange("email", event.target.value)
                       }
-                      className={baseInputClasses}
+                      className="w-full rounded-xl border border-white/20 bg-black/30 px-3 py-2 text-xs text-white focus:border-white/40 focus:outline-none"
                     />
                   </div>
                 </div>
@@ -504,9 +624,9 @@ const PhotoDetail = () => {
                     type="tel"
                     value={orderState.recipient.phoneNumber}
                     onChange={(event) =>
-                      handleRecipientChange("phoneNumber", event.target.value)
-                    }
-                    className={baseInputClasses}
+                        handleRecipientChange("phoneNumber", event.target.value)
+                      }
+                    className="w-full rounded-xl border border-white/20 bg-black/30 px-3 py-2 text-xs text-white focus:border-white/40 focus:outline-none"
                     placeholder="Incluye prefijo internacional si es necesario"
                   />
                 </div>
@@ -520,9 +640,9 @@ const PhotoDetail = () => {
                     required
                     value={orderState.recipient.addressLine1}
                     onChange={(event) =>
-                      handleRecipientChange("addressLine1", event.target.value)
-                    }
-                    className={baseInputClasses}
+                        handleRecipientChange("addressLine1", event.target.value)
+                      }
+                    className="w-full rounded-xl border border-white/20 bg-black/30 px-3 py-2 text-xs text-white focus:border-white/40 focus:outline-none"
                     placeholder="Calle y número"
                   />
                 </div>
@@ -535,9 +655,9 @@ const PhotoDetail = () => {
                     type="text"
                     value={orderState.recipient.addressLine2}
                     onChange={(event) =>
-                      handleRecipientChange("addressLine2", event.target.value)
-                    }
-                    className={baseInputClasses}
+                        handleRecipientChange("addressLine2", event.target.value)
+                      }
+                    className="w-full rounded-xl border border-white/20 bg-black/30 px-3 py-2 text-xs text-white focus:border-white/40 focus:outline-none"
                     placeholder="Apartamento, piso, etc."
                   />
                 </div>
@@ -554,7 +674,7 @@ const PhotoDetail = () => {
                       onChange={(event) =>
                         handleRecipientChange("city", event.target.value)
                       }
-                      className={baseInputClasses}
+                      className="w-full rounded-xl border border-white/20 bg-black/30 px-3 py-2 text-xs text-white focus:border-white/40 focus:outline-none"
                     />
                   </div>
                   <div className="flex flex-col gap-1">
@@ -567,7 +687,7 @@ const PhotoDetail = () => {
                       onChange={(event) =>
                         handleRecipientChange("stateOrCounty", event.target.value)
                       }
-                      className={baseInputClasses}
+                      className="w-full rounded-xl border border-white/20 bg-black/30 px-3 py-2 text-xs text-white focus:border-white/40 focus:outline-none"
                       placeholder="Opcional"
                     />
                   </div>
@@ -585,7 +705,7 @@ const PhotoDetail = () => {
                       onChange={(event) =>
                         handleRecipientChange("postalCode", event.target.value)
                       }
-                      className={baseInputClasses}
+                      className="w-full rounded-xl border border-white/20 bg-black/30 px-3 py-2 text-xs text-white focus:border-white/40 focus:outline-none"
                     />
                   </div>
                   <div className="flex flex-col gap-1">
@@ -599,7 +719,7 @@ const PhotoDetail = () => {
                       onChange={(event) =>
                         handleRecipientChange("countryCode", event.target.value)
                       }
-                      className={baseInputClasses}
+                      className="w-full rounded-xl border border-white/20 bg-black/30 px-3 py-2 text-xs text-white focus:border-white/40 focus:outline-none"
                       maxLength={2}
                       placeholder="ES"
                     />

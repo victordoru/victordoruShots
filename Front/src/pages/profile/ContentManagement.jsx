@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import api from "@/utils/axiosInstance";
 
-const initialForm = {
+const photoInitialForm = {
   title: "",
   description: "",
   price: "",
@@ -11,388 +11,635 @@ const initialForm = {
   shotAt: "",
 };
 
-const productInitialForm = {
+const catalogInitialForm = {
   sku: "",
   name: "",
   description: "",
+  basePrice: "",
+  currency: "EUR",
+  defaultSizing: "",
+  availableColors: [],
+};
+
+const variantInitialState = {
+  catalogProductId: "",
+  displayName: "",
+  description: "",
   retailPrice: "",
   currency: "EUR",
-  sizing: "fillPrintArea",
-  mockupImages: [],
+  sizing: "",
+  assetUrl: "",
+  isActive: true,
+  existingMockupImages: [],
+  keepMockupImageIds: [],
+  newMockups: [],
+  colorOptions: [],
+};
+
+const createClientId = () => {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return `id-${Math.random().toString(36).slice(2, 10)}`;
 };
 
 const ContentManagement = () => {
-  const [form, setForm] = useState(initialForm);
-  const [imageFile, setImageFile] = useState(null);
-  const [preview, setPreview] = useState(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [photos, setPhotos] = useState([]);
-  const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
-  const [prodigiProducts, setProdigiProducts] = useState([]);
-  const [productForm, setProductForm] = useState(productInitialForm);
-  const [editingProductId, setEditingProductId] = useState(null);
-  const [productImageFiles, setProductImageFiles] = useState([]);
-  const [productImagesToRemove, setProductImagesToRemove] = useState([]);
-  const [productSubmitting, setProductSubmitting] = useState(false);
-  const [productError, setProductError] = useState("");
-  const [productSuccess, setProductSuccess] = useState("");
-  const backendBase = import.meta.env.VITE_URL_BACKEND;
+  const [photoForm, setPhotoForm] = useState(photoInitialForm);
+  const [photoImageFile, setPhotoImageFile] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState(null);
+  const [photoSubmitting, setPhotoSubmitting] = useState(false);
+  const [photoMessage, setPhotoMessage] = useState({ success: null, error: null });
+
+  const [catalogProducts, setCatalogProducts] = useState([]);
+  const [catalogForm, setCatalogForm] = useState(catalogInitialForm);
+  const [catalogEditingId, setCatalogEditingId] = useState(null);
+  const [catalogSubmitting, setCatalogSubmitting] = useState(false);
+  const [catalogMessage, setCatalogMessage] = useState({ success: null, error: null });
+
+  const [selectedPhotoId, setSelectedPhotoId] = useState("");
+  const [variantsByPhoto, setVariantsByPhoto] = useState({});
+  const [variantForm, setVariantForm] = useState(variantInitialState);
+  const [variantEditingId, setVariantEditingId] = useState(null);
+  const [variantSubmitting, setVariantSubmitting] = useState(false);
+  const [variantMessage, setVariantMessage] = useState({ success: null, error: null });
 
   useEffect(() => {
     fetchPhotos();
-    fetchProdigiProducts();
+    fetchCatalogProducts();
   }, []);
 
   useEffect(() => {
     return () => {
-      productImageFiles.forEach(({ preview }) => {
-        if (preview) {
-          URL.revokeObjectURL(preview);
+      if (photoPreview) {
+        URL.revokeObjectURL(photoPreview);
+      }
+    };
+  }, [photoPreview]);
+
+  useEffect(() => {
+    return () => {
+      variantForm.newMockups.forEach((item) => {
+        if (item.preview) {
+          URL.revokeObjectURL(item.preview);
         }
       });
     };
-  }, [productImageFiles]);
+  }, [variantForm.newMockups]);
 
   const fetchPhotos = async () => {
     try {
       const { data } = await api.get("/photos");
-      const normalized = Array.isArray(data)
-        ? data.map((photo) => ({
-            ...photo,
-            prodigiProducts: Array.isArray(photo.prodigiProducts)
-              ? photo.prodigiProducts.map((id) => String(id))
-              : [],
-          }))
-        : [];
+      const normalized = Array.isArray(data) ? data : [];
       setPhotos(normalized);
     } catch (err) {
       console.error("Error fetching photos", err);
-      setError("No se pudieron cargar las fotos");
+      setPhotoMessage({ success: null, error: "No se pudieron cargar las fotos" });
     }
   };
 
-  const fetchProdigiProducts = async () => {
+  const fetchCatalogProducts = async () => {
     try {
-      const { data } = await api.get("/prodigi/admin/products");
-      setProdigiProducts(Array.isArray(data) ? data : []);
-      setProductError("");
+      const { data } = await api.get("/prodigi/catalog");
+      setCatalogProducts(Array.isArray(data) ? data : []);
+      setCatalogMessage((prev) => ({ ...prev, error: null }));
     } catch (err) {
-      console.error("Error fetching Prodigi products", err);
-      setProductError(
-        err.response?.data?.error ||
-          "No se pudieron cargar los productos de impresión"
-      );
+      console.error("Error fetching catalog products", err);
+      setCatalogMessage({
+        success: null,
+        error:
+          err.response?.data?.error ||
+          "No se pudieron cargar los productos del catálogo",
+      });
     }
   };
 
-  const handleChange = (event) => {
-    const { name, value } = event.target;
-    setForm((prev) => ({ ...prev, [name]: value }));
+  const fetchPhotoVariants = async (photoId) => {
+    if (!photoId) return;
+    try {
+      const { data } = await api.get(`/prodigi/admin/photos/${photoId}/variants`);
+      setVariantsByPhoto((prev) => ({
+        ...prev,
+        [photoId]: Array.isArray(data) ? data : [],
+      }));
+    } catch (err) {
+      console.error("Error fetching photo variants", err);
+      setVariantMessage({
+        success: null,
+        error:
+          err.response?.data?.error ||
+          "No se pudieron cargar las variantes para esta fotografía",
+      });
+    }
   };
 
-  const handleFileChange = (event) => {
+  const handlePhotoFormChange = (event) => {
+    const { name, value } = event.target;
+    setPhotoForm((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handlePhotoFileChange = (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    setImageFile(file);
+    setPhotoImageFile(file);
     const objectUrl = URL.createObjectURL(file);
-    setPreview(objectUrl);
-  };
-
-  useEffect(() => {
-    return () => {
-      if (preview) {
-        URL.revokeObjectURL(preview);
-      }
-    };
-  }, [preview]);
-
-  const resetForm = () => {
-    setForm(initialForm);
-    setImageFile(null);
-    setPreview(null);
-  };
-
-  const clearNewProductImages = () => {
-    setProductImageFiles((prev) => {
-      prev.forEach(({ preview }) => {
-        if (preview) {
-          URL.revokeObjectURL(preview);
-        }
-      });
-      return [];
+    setPhotoPreview((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return objectUrl;
     });
   };
 
-  const resetProductFormState = () => {
-    setProductForm(productInitialForm);
-    setEditingProductId(null);
-    clearNewProductImages();
-    setProductImagesToRemove([]);
+  const resetPhotoForm = () => {
+    setPhotoForm(photoInitialForm);
+    setPhotoImageFile(null);
+    if (photoPreview) {
+      URL.revokeObjectURL(photoPreview);
+      setPhotoPreview(null);
+    }
   };
 
-  const handleProductFormChange = (event) => {
-    const { name, value } = event.target;
-    setProductForm((prev) => ({ ...prev, [name]: value }));
-  };
-
-  const handleProductImageChange = (event) => {
-    const files = Array.from(event.target.files || []);
-    if (files.length === 0) return;
-
-    const mapped = files.map((file) => ({
-      file,
-      preview: URL.createObjectURL(file),
-    }));
-
-    setProductImageFiles((prev) => [...prev, ...mapped]);
-    event.target.value = "";
-  };
-
-  const handleRemoveNewProductImage = (previewUrl) => {
-    setProductImageFiles((prev) => {
-      const removed = prev.find((item) => item.preview === previewUrl);
-      if (removed?.preview) {
-        URL.revokeObjectURL(removed.preview);
-      }
-      return prev.filter((item) => item.preview !== previewUrl);
-    });
-  };
-
-  const handleRemoveExistingProductImage = (imagePath) => {
-    setProductForm((prev) => ({
-      ...prev,
-      mockupImages: prev.mockupImages.filter((image) => image !== imagePath),
-    }));
-    setProductImagesToRemove((prev) =>
-      prev.includes(imagePath) ? prev : [...prev, imagePath]
-    );
-  };
-
-  const handleProductSubmit = async (event) => {
+  const handlePhotoSubmit = async (event) => {
     event.preventDefault();
-    setProductError("");
-    setProductSuccess("");
+    setPhotoMessage({ success: null, error: null });
 
-    if (!productForm.sku.trim() || !productForm.name.trim()) {
-      setProductError("El SKU y el nombre son obligatorios");
+    if (!photoForm.title.trim()) {
+      setPhotoMessage({ success: null, error: "El título es obligatorio" });
+      return;
+    }
+
+    if (!photoImageFile) {
+      setPhotoMessage({ success: null, error: "Selecciona una imagen antes de guardar" });
       return;
     }
 
     try {
-      setProductSubmitting(true);
-
+      setPhotoSubmitting(true);
       const formData = new FormData();
-      formData.append("sku", productForm.sku.trim());
-      formData.append("name", productForm.name.trim());
-      if (productForm.description) {
-        formData.append("description", productForm.description);
-      }
-      if (productForm.retailPrice !== "") {
-        formData.append("retailPrice", productForm.retailPrice);
-      }
-      if (productForm.currency) {
-        formData.append("currency", productForm.currency);
-      }
-      if (productForm.sizing) {
-        formData.append("sizing", productForm.sizing);
-      }
-
-      productImageFiles.forEach(({ file }) => {
-        formData.append("images", file);
-      });
-
-      if (productImagesToRemove.length) {
-        formData.append(
-          "imagesToRemove",
-          JSON.stringify(productImagesToRemove)
-        );
-      }
-
-      const config = { headers: { "Content-Type": "multipart/form-data" } };
-
-      if (editingProductId) {
-        await api.put(
-          `/prodigi/admin/products/${editingProductId}`,
-          formData,
-          config
-        );
-        setProductSuccess("Producto actualizado correctamente");
-      } else {
-        await api.post("/prodigi/admin/products", formData, config);
-        setProductSuccess("Producto creado correctamente");
-      }
-
-      resetProductFormState();
-      await fetchProdigiProducts();
-      await fetchPhotos();
-    } catch (err) {
-      console.error("Error saving Prodigi product", err);
-      const message =
-        err.response?.data?.error || "No se pudo guardar el producto";
-      setProductError(message);
-    } finally {
-      setProductSubmitting(false);
-    }
-  };
-
-  const handleEditProduct = (product) => {
-    setProductError("");
-    setProductSuccess("");
-    clearNewProductImages();
-    setProductImagesToRemove([]);
-    setEditingProductId(product._id);
-    setProductForm({
-      sku: product.sku || "",
-      name: product.name || "",
-      description: product.description || "",
-      retailPrice:
-        product.retailPrice !== undefined && product.retailPrice !== null
-          ? String(product.retailPrice)
-          : "",
-      currency: product.currency || "EUR",
-      sizing: product.sizing || "fillPrintArea",
-      mockupImages: product.mockupImages || [],
-    });
-  };
-
-  const handleCancelProductEdit = () => {
-    resetProductFormState();
-    setProductError("");
-    setProductSuccess("");
-  };
-
-  const handleDeleteProduct = async (productId) => {
-    setProductError("");
-    setProductSuccess("");
-    try {
-      await api.delete(`/prodigi/admin/products/${productId}`);
-      if (editingProductId === productId) {
-        resetProductFormState();
-      }
-      setProductSuccess("Producto eliminado correctamente");
-      await fetchProdigiProducts();
-      await fetchPhotos();
-    } catch (err) {
-      console.error("Error deleting Prodigi product", err);
-      const message =
-        err.response?.data?.error || "No se pudo eliminar el producto";
-      setProductError(message);
-    }
-  };
-
-  const handlePhotoProductToggle = async (photoId, productId, checked) => {
-    const targetPhoto = photos.find((item) => item._id === photoId);
-    if (!targetPhoto) return;
-
-    const currentIds = Array.isArray(targetPhoto.prodigiProducts)
-      ? targetPhoto.prodigiProducts.map((id) => String(id))
-      : [];
-
-    const nextIds = checked
-      ? Array.from(new Set([...currentIds, productId]))
-      : currentIds.filter((id) => id !== productId);
-
-    setPhotos((prev) =>
-      prev.map((photo) =>
-        photo._id === photoId
-          ? { ...photo, prodigiProducts: nextIds }
-          : photo
-      )
-    );
-
-    try {
-      const { data } = await api.put(
-        `/prodigi/admin/photos/${photoId}/products`,
-        {
-          productIds: nextIds,
-        }
-      );
-
-      const assignedIds = Array.isArray(data)
-        ? data.map((item) => String(item._id))
-        : [];
-
-      setPhotos((prev) =>
-        prev.map((photo) =>
-          photo._id === photoId
-            ? { ...photo, prodigiProducts: assignedIds }
-            : photo
-        )
-      );
-      setSuccess("Productos actualizados para la fotografía");
-    } catch (err) {
-      console.error("Error updating photo products", err);
-      const message =
-        err.response?.data?.error ||
-        "No se pudieron actualizar los productos para la fotografía";
-      setError(message);
-      setPhotos((prev) =>
-        prev.map((photo) =>
-          photo._id === photoId
-            ? { ...photo, prodigiProducts: currentIds }
-            : photo
-        )
-      );
-    }
-  };
-
-  const handleSubmit = async (event) => {
-    event.preventDefault();
-    setError("");
-    setSuccess("");
-
-    if (!form.title.trim()) {
-      setError("El título es obligatorio");
-      return;
-    }
-
-    if (!imageFile) {
-      setError("Selecciona una imagen antes de guardar");
-      return;
-    }
-
-    try {
-      setIsSubmitting(true);
-      const formData = new FormData();
-      Object.entries(form).forEach(([key, value]) => {
+      Object.entries(photoForm).forEach(([key, value]) => {
         if (value) formData.append(key, value);
       });
-      formData.append("image", imageFile);
+      formData.append("image", photoImageFile);
 
       await api.post("/photos", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
-      setSuccess("Imagen guardada correctamente");
-      resetForm();
+      setPhotoMessage({ success: "Imagen guardada correctamente", error: null });
+      resetPhotoForm();
       await fetchPhotos();
     } catch (err) {
       console.error("Error creating photo", err);
       const message = err.response?.data?.message || "No se pudo guardar la imagen";
-      setError(message);
+      setPhotoMessage({ success: null, error: message });
     } finally {
-      setIsSubmitting(false);
+      setPhotoSubmitting(false);
     }
   };
 
-  const sortedPhotos = useMemo(
-    () =>
-      [...photos].sort(
-        (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
-      ),
-    [photos]
+  const catalogAvailableColors = useMemo(
+    () => catalogForm.availableColors || [],
+    [catalogForm.availableColors]
   );
 
+  const handleCatalogFormChange = (event) => {
+    const { name, value } = event.target;
+    setCatalogForm((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const addCatalogColor = () => {
+    setCatalogForm((prev) => ({
+      ...prev,
+      availableColors: [
+        ...prev.availableColors,
+        { clientId: createClientId(), code: "", name: "" },
+      ],
+    }));
+  };
+
+  const updateCatalogColor = (clientId, field, value) => {
+    setCatalogForm((prev) => ({
+      ...prev,
+      availableColors: prev.availableColors.map((color) =>
+        color.clientId === clientId
+          ? {
+              ...color,
+              [field]:
+                field === "code" && value
+                  ? value.toUpperCase()
+                  : value,
+            }
+          : color
+      ),
+    }));
+  };
+
+  const removeCatalogColor = (clientId) => {
+    setCatalogForm((prev) => ({
+      ...prev,
+      availableColors: prev.availableColors.filter(
+        (color) => color.clientId !== clientId
+      ),
+    }));
+  };
+
+  const resetCatalogForm = () => {
+    setCatalogForm(catalogInitialForm);
+    setCatalogEditingId(null);
+  };
+
+  const handleCatalogSubmit = async (event) => {
+    event.preventDefault();
+    setCatalogMessage({ success: null, error: null });
+
+    if (!catalogForm.sku.trim() || !catalogForm.name.trim()) {
+      setCatalogMessage({ success: null, error: "El SKU y el nombre son obligatorios" });
+      return;
+    }
+
+    try {
+      setCatalogSubmitting(true);
+      const payload = {
+        sku: catalogForm.sku.trim(),
+        name: catalogForm.name.trim(),
+        description: catalogForm.description,
+        basePrice: catalogForm.basePrice,
+        currency: catalogForm.currency,
+        defaultSizing: catalogForm.defaultSizing,
+        availableColors: catalogForm.availableColors.map((color) => ({
+          code: color.code?.trim().toUpperCase() || "",
+          name: color.name?.trim() || "",
+        })),
+      };
+
+      if (catalogEditingId) {
+        await api.put(`/prodigi/catalog/${catalogEditingId}`, payload);
+        setCatalogMessage({ success: "Producto actualizado", error: null });
+      } else {
+        await api.post("/prodigi/catalog", payload);
+        setCatalogMessage({ success: "Producto creado", error: null });
+      }
+
+      resetCatalogForm();
+      await fetchCatalogProducts();
+    } catch (err) {
+      console.error("Error saving catalog product", err);
+      const message =
+        err.response?.data?.error || "No se pudo guardar el producto del catálogo";
+      setCatalogMessage({ success: null, error: message });
+    } finally {
+      setCatalogSubmitting(false);
+    }
+  };
+
+  const handleEditCatalogProduct = (product) => {
+    setCatalogEditingId(product._id);
+    setCatalogForm({
+      sku: product.sku || "",
+      name: product.name || "",
+      description: product.description || "",
+      basePrice:
+        product.basePrice !== undefined && product.basePrice !== null
+          ? String(product.basePrice)
+          : "",
+      currency: product.currency || "EUR",
+      defaultSizing: product.defaultSizing || "",
+      availableColors: (product.availableColors || []).map((color) => ({
+        clientId: createClientId(),
+        code: color.code || "",
+        name: color.name || "",
+      })),
+    });
+    setCatalogMessage({ success: null, error: null });
+  };
+
+  const handleDeleteCatalogProduct = async (productId) => {
+    try {
+      await api.delete(`/prodigi/catalog/${productId}`);
+      setCatalogMessage({ success: "Producto eliminado", error: null });
+      await fetchCatalogProducts();
+    } catch (err) {
+      console.error("Error deleting catalog product", err);
+      const message =
+        err.response?.data?.error || "No se pudo eliminar el producto del catálogo";
+      setCatalogMessage({ success: null, error: message });
+    }
+  };
+
+  const resetVariantForm = () => {
+    setVariantForm(variantInitialState);
+    setVariantEditingId(null);
+  };
+
+  const initializeVariantFormFromCatalog = (catalogProductId) => {
+    const catalogProduct = catalogProducts.find(
+      (item) => item._id === catalogProductId
+    );
+    if (!catalogProduct) return;
+
+    if (!variantEditingId) {
+      const colorOptions = (catalogProduct.availableColors || []).map((color) => ({
+        clientId: createClientId(),
+        code: color.code ? String(color.code).toUpperCase() : "",
+        name: color.name || "",
+        assetUrl: "",
+        mockupImageRefs: [],
+      }));
+
+      setVariantForm((prev) => ({
+        ...prev,
+        colorOptions,
+      }));
+    }
+  };
+
+  const handleVariantFieldChange = (field, value) => {
+    setVariantForm((prev) => ({ ...prev, [field]: value }));
+
+    if (field === "catalogProductId") {
+      initializeVariantFormFromCatalog(value);
+    }
+  };
+
+  const addVariantColor = () => {
+    setVariantForm((prev) => ({
+      ...prev,
+      colorOptions: [
+        ...prev.colorOptions,
+        {
+          clientId: createClientId(),
+          code: "",
+          name: "",
+          assetUrl: "",
+          mockupImageRefs: [],
+        },
+      ],
+    }));
+  };
+
+  const updateVariantColor = (clientId, field, value) => {
+    setVariantForm((prev) => ({
+      ...prev,
+      colorOptions: prev.colorOptions.map((color) =>
+        color.clientId === clientId
+          ? {
+              ...color,
+              [field]:
+                field === "code" && value
+                  ? value.toUpperCase()
+                  : value,
+            }
+          : color
+      ),
+    }));
+  };
+
+  const toggleVariantColorMockup = (clientId, imageRef) => {
+    setVariantForm((prev) => ({
+      ...prev,
+      colorOptions: prev.colorOptions.map((color) => {
+        if (color.clientId !== clientId) return color;
+        const exists = color.mockupImageRefs.includes(imageRef);
+        return {
+          ...color,
+          mockupImageRefs: exists
+            ? color.mockupImageRefs.filter((ref) => ref !== imageRef)
+            : [...color.mockupImageRefs, imageRef],
+        };
+      }),
+    }));
+  };
+
+  const removeVariantColor = (clientId) => {
+    setVariantForm((prev) => ({
+      ...prev,
+      colorOptions: prev.colorOptions.filter((color) => color.clientId !== clientId),
+    }));
+  };
+
+  const handleVariantMockupUpload = (event) => {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+
+    const mapped = files.map((file) => ({
+      file,
+      tempId: createClientId(),
+      preview: URL.createObjectURL(file),
+    }));
+
+    setVariantForm((prev) => ({
+      ...prev,
+      newMockups: [...prev.newMockups, ...mapped],
+    }));
+
+    event.target.value = "";
+  };
+
+  const removeNewVariantMockup = (tempId) => {
+    setVariantForm((prev) => {
+      const target = prev.newMockups.find((item) => item.tempId === tempId);
+      if (target?.preview) {
+        URL.revokeObjectURL(target.preview);
+      }
+      return {
+        ...prev,
+        newMockups: prev.newMockups.filter((item) => item.tempId !== tempId),
+        colorOptions: prev.colorOptions.map((color) => ({
+          ...color,
+          mockupImageRefs: color.mockupImageRefs.filter((ref) => ref !== tempId),
+        })),
+      };
+    });
+  };
+
+  const removeExistingVariantMockup = (mockupId) => {
+    setVariantForm((prev) => ({
+      ...prev,
+      existingMockupImages: prev.existingMockupImages.filter(
+        (image) => image.id !== mockupId
+      ),
+      keepMockupImageIds: prev.keepMockupImageIds.filter((id) => id !== mockupId),
+      colorOptions: prev.colorOptions.map((color) => ({
+        ...color,
+        mockupImageRefs: color.mockupImageRefs.filter((ref) => ref !== mockupId),
+      })),
+    }));
+  };
+
+  const loadVariantIntoForm = (variant) => {
+    setVariantEditingId(variant.id);
+
+    const existingMockups = (variant.mockupImages || []).map((image) => ({
+      id: image.id,
+      url: image.url,
+      label: image.label,
+    }));
+
+    setVariantForm({
+      catalogProductId: variant.catalogProduct?.id || "",
+      displayName: variant.displayName || "",
+      description: variant.description || "",
+      retailPrice:
+        variant.retailPrice !== undefined && variant.retailPrice !== null
+          ? String(variant.retailPrice)
+          : "",
+      currency: variant.currency || "EUR",
+      sizing: variant.sizing || "",
+      assetUrl: variant.assetUrl || "",
+      isActive: Boolean(variant.isActive),
+      existingMockupImages: existingMockups,
+      keepMockupImageIds: existingMockups.map((image) => image.id),
+      newMockups: [],
+      colorOptions: (variant.colorOptions || []).map((color) => ({
+        clientId: createClientId(),
+        code: color.code || "",
+        name: color.name || "",
+        assetUrl: color.assetUrl || "",
+        mockupImageRefs: Array.isArray(color.mockupImageRefs)
+          ? [...color.mockupImageRefs]
+          : [],
+      })),
+    });
+
+    setVariantMessage({ success: null, error: null });
+  };
+
+  const handleCancelVariantEdit = () => {
+    resetVariantForm();
+    setVariantMessage({ success: null, error: null });
+  };
+
+  const buildVariantFormData = () => {
+    const formData = new FormData();
+
+    formData.append("catalogProductId", variantForm.catalogProductId);
+    formData.append("displayName", variantForm.displayName);
+    formData.append("description", variantForm.description);
+    formData.append("retailPrice", variantForm.retailPrice);
+    formData.append("currency", variantForm.currency);
+    formData.append("sizing", variantForm.sizing);
+    formData.append("assetUrl", variantForm.assetUrl);
+    formData.append("isActive", variantForm.isActive);
+
+    formData.append(
+      "keepMockupImageIds",
+      JSON.stringify(variantForm.keepMockupImageIds)
+    );
+
+    const colorOptionsPayload = variantForm.colorOptions.map((color) => ({
+      code: color.code?.trim().toUpperCase() || "",
+      name: color.name?.trim() || "",
+      assetUrl: color.assetUrl || "",
+      mockupImageRefs: color.mockupImageRefs,
+    }));
+    formData.append("colorOptions", JSON.stringify(colorOptionsPayload));
+
+    const newMockupMeta = variantForm.newMockups.map((item) => ({
+      tempId: item.tempId,
+    }));
+    formData.append("newMockupMeta", JSON.stringify(newMockupMeta));
+
+    variantForm.newMockups.forEach(({ file }) => {
+      formData.append("mockups", file);
+    });
+
+    return formData;
+  };
+
+  const refreshVariantsForPhoto = async (photoId) => {
+    await fetchPhotoVariants(photoId);
+  };
+
+  const handleVariantSubmit = async (event) => {
+    event.preventDefault();
+    setVariantMessage({ success: null, error: null });
+
+    if (!selectedPhotoId) {
+      setVariantMessage({ success: null, error: "Selecciona una fotografía" });
+      return;
+    }
+
+    if (!variantForm.catalogProductId) {
+      setVariantMessage({
+        success: null,
+        error: "Selecciona un producto del catálogo",
+      });
+      return;
+    }
+
+    try {
+      setVariantSubmitting(true);
+      const formData = buildVariantFormData();
+      const config = { headers: { "Content-Type": "multipart/form-data" } };
+
+      if (variantEditingId) {
+        await api.put(
+          `/prodigi/admin/photos/${selectedPhotoId}/variants/${variantEditingId}`,
+          formData,
+          config
+        );
+        setVariantMessage({ success: "Variante actualizada", error: null });
+      } else {
+        await api.post(
+          `/prodigi/admin/photos/${selectedPhotoId}/variants`,
+          formData,
+          config
+        );
+        setVariantMessage({ success: "Variante creada", error: null });
+      }
+
+      resetVariantForm();
+      await refreshVariantsForPhoto(selectedPhotoId);
+    } catch (err) {
+      console.error("Error saving variant", err);
+      const message =
+        err.response?.data?.error || "No se pudo guardar la variante";
+      setVariantMessage({ success: null, error: message });
+    } finally {
+      setVariantSubmitting(false);
+    }
+  };
+
+  const handleDeleteVariant = async (photoId, variantId) => {
+    try {
+      await api.delete(
+        `/prodigi/admin/photos/${photoId}/variants/${variantId}`
+      );
+      setVariantMessage({ success: "Variante eliminada", error: null });
+      await refreshVariantsForPhoto(photoId);
+
+      if (variantEditingId === variantId) {
+        resetVariantForm();
+      }
+    } catch (err) {
+      console.error("Error deleting variant", err);
+      const message =
+        err.response?.data?.error || "No se pudo eliminar la variante";
+      setVariantMessage({ success: null, error: message });
+    }
+  };
+
+  const selectedPhoto = useMemo(
+    () => photos.find((photo) => photo._id === selectedPhotoId) || null,
+    [photos, selectedPhotoId]
+  );
+
+  const selectedPhotoVariants = useMemo(
+    () => variantsByPhoto[selectedPhotoId] || [],
+    [variantsByPhoto, selectedPhotoId]
+  );
+
+  const variantMockupSource = (mockup) =>
+    mockup.url?.startsWith("http") ? mockup.url : `${import.meta.env.VITE_URL_BACKEND}${mockup.url}`;
+
   return (
-    <div className="mx-auto flex w-full max-w-5xl flex-col gap-12 px-4 py-10 text-white">
+    <div className="mx-auto flex w-full max-w-6xl flex-col gap-12 px-4 py-10 text-white">
       <header className="flex flex-col gap-2">
         <h1 className="text-4xl font-semibold uppercase tracking-[0.4em] sm:text-5xl">
           Content Management
         </h1>
         <p className="text-sm text-white/60 sm:text-base">
-          Sube imágenes para tu catálogo. Los archivos se almacenan en el servidor y aquí guardamos la referencia con los datos clave.
+          Gestiona tu biblioteca fotográfica y personaliza qué productos de impresión estarán disponibles en cada imagen.
         </p>
       </header>
 
@@ -400,15 +647,15 @@ const ContentManagement = () => {
         <h2 className="mb-6 text-2xl font-semibold uppercase tracking-[0.3em] text-white">
           Nueva imagen
         </h2>
-        <form onSubmit={handleSubmit} className="grid gap-6 md:grid-cols-[1fr_280px]">
+        <form onSubmit={handlePhotoSubmit} className="grid gap-6 md:grid-cols-[1fr_280px]">
           <div className="grid gap-4">
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="flex flex-col gap-2">
                 <span className="text-xs uppercase tracking-widest text-white/60">Título*</span>
                 <input
                   name="title"
-                  value={form.title}
-                  onChange={handleChange}
+                  value={photoForm.title}
+                  onChange={handlePhotoFormChange}
                   className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
                   placeholder="Nombre de la fotografía"
                   required
@@ -418,8 +665,8 @@ const ContentManagement = () => {
                 <span className="text-xs uppercase tracking-widest text-white/60">Precio (€)</span>
                 <input
                   name="price"
-                  value={form.price}
-                  onChange={handleChange}
+                  value={photoForm.price}
+                  onChange={handlePhotoFormChange}
                   type="number"
                   min="0"
                   step="0.01"
@@ -433,8 +680,8 @@ const ContentManagement = () => {
               <span className="text-xs uppercase tracking-widest text-white/60">Descripción</span>
               <textarea
                 name="description"
-                value={form.description}
-                onChange={handleChange}
+                value={photoForm.description}
+                onChange={handlePhotoFormChange}
                 rows={4}
                 className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
                 placeholder="Notas sobre la toma, inspiración, contexto..."
@@ -446,8 +693,8 @@ const ContentManagement = () => {
                 <span className="text-xs uppercase tracking-widest text-white/60">Etiquetas</span>
                 <input
                   name="tags"
-                  value={form.tags}
-                  onChange={handleChange}
+                  value={photoForm.tags}
+                  onChange={handlePhotoFormChange}
                   className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
                   placeholder="playa, analógico, verano"
                 />
@@ -456,8 +703,8 @@ const ContentManagement = () => {
                 <span className="text-xs uppercase tracking-widest text-white/60">Cámara</span>
                 <input
                   name="camera"
-                  value={form.camera}
-                  onChange={handleChange}
+                  value={photoForm.camera}
+                  onChange={handlePhotoFormChange}
                   className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
                   placeholder="Canon R6"
                 />
@@ -469,8 +716,8 @@ const ContentManagement = () => {
                 <span className="text-xs uppercase tracking-widest text-white/60">Ubicación</span>
                 <input
                   name="location"
-                  value={form.location}
-                  onChange={handleChange}
+                  value={photoForm.location}
+                  onChange={handlePhotoFormChange}
                   className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
                   placeholder="Tarifa, Cádiz"
                 />
@@ -479,41 +726,50 @@ const ContentManagement = () => {
                 <span className="text-xs uppercase tracking-widest text-white/60">Fecha de captura</span>
                 <input
                   name="shotAt"
-                  value={form.shotAt}
-                  onChange={handleChange}
+                  value={photoForm.shotAt}
+                  onChange={handlePhotoFormChange}
                   type="date"
                   className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
                 />
               </label>
             </div>
 
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-6">
-              <label className="flex w-full cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-white/20 bg-black/30 px-4 py-8 text-center text-white/70 transition hover:border-white/40 hover:text-white">
-                <span className="text-xs uppercase tracking-[0.3em]">Selecciona una imagen</span>
-                <span className="text-[0.7rem] text-white/40">JPEG, PNG o WebP</span>
-                <input type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
+            <div className="flex flex-col gap-2">
+              <span className="text-xs uppercase tracking-widest text-white/60">Archivo</span>
+              <label className="flex w-full cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-white/20 bg-black/30 px-4 py-10 text-center text-xs uppercase tracking-[0.3em] text-white/60 transition hover:border-white/40 hover:text-white">
+                <span>Seleccionar imagen</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handlePhotoFileChange}
+                  className="hidden"
+                />
               </label>
-              {preview && (
-                <div className="h-32 w-full overflow-hidden rounded-2xl border border-white/10 sm:w-48">
-                  <img src={preview} alt="Preview" className="h-full w-full object-cover" />
+              {photoPreview && (
+                <div className="relative h-48 overflow-hidden rounded-xl border border-white/10">
+                  <img src={photoPreview} alt="Preview" className="h-full w-full object-cover" />
                 </div>
               )}
             </div>
 
-            {error && <p className="text-sm text-red-400">{error}</p>}
-            {success && <p className="text-sm text-emerald-300">{success}</p>}
+            {photoMessage.error && (
+              <p className="text-sm text-red-400">{photoMessage.error}</p>
+            )}
+            {photoMessage.success && (
+              <p className="text-sm text-emerald-300">{photoMessage.success}</p>
+            )}
 
             <div className="flex flex-wrap gap-4">
               <button
                 type="submit"
-                disabled={isSubmitting}
+                disabled={photoSubmitting}
                 className="rounded-full bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.3em] text-black transition hover:bg-white/80 disabled:cursor-not-allowed disabled:bg-white/40"
               >
-                {isSubmitting ? "Guardando..." : "Guardar"}
+                {photoSubmitting ? "Guardando..." : "Guardar"}
               </button>
               <button
                 type="button"
-                onClick={resetForm}
+                onClick={resetPhotoForm}
                 className="rounded-full border border-white/20 px-6 py-3 text-sm font-semibold uppercase tracking-[0.3em] text-white transition hover:border-white/40 hover:text-white"
               >
                 Limpiar
@@ -527,13 +783,13 @@ const ContentManagement = () => {
         <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-2xl font-semibold uppercase tracking-[0.3em] text-white">
-              Productos de impresión
+              Catálogo Prodigi
             </h2>
             <p className="mt-1 text-sm text-white/60">
-              Crea productos vinculados a Prodigi, sube imágenes mockup y asócialos a tus fotografías.
+              Define los productos base (SKU) disponibles. Luego podrás combinarlos con cada fotografía.
             </p>
           </div>
-          {editingProductId && (
+          {catalogEditingId && (
             <span className="rounded-full border border-white/20 px-3 py-1 text-xs uppercase tracking-[0.3em] text-white/60">
               Editando producto
             </span>
@@ -541,14 +797,14 @@ const ContentManagement = () => {
         </div>
 
         <div className="grid gap-8 lg:grid-cols-[360px_1fr]">
-          <form onSubmit={handleProductSubmit} className="flex flex-col gap-4">
+          <form onSubmit={handleCatalogSubmit} className="flex flex-col gap-4">
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="flex flex-col gap-2">
                 <span className="text-xs uppercase tracking-widest text-white/60">SKU*</span>
                 <input
                   name="sku"
-                  value={productForm.sku}
-                  onChange={handleProductFormChange}
+                  value={catalogForm.sku}
+                  onChange={handleCatalogFormChange}
                   className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm uppercase text-white placeholder:text-white/30 focus:border-white focus:outline-none"
                   placeholder="GLOBAL-CAN-10X10"
                   required
@@ -558,8 +814,8 @@ const ContentManagement = () => {
                 <span className="text-xs uppercase tracking-widest text-white/60">Nombre*</span>
                 <input
                   name="name"
-                  value={productForm.name}
-                  onChange={handleProductFormChange}
+                  value={catalogForm.name}
+                  onChange={handleCatalogFormChange}
                   className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
                   placeholder="Canvas 10×10"
                   required
@@ -569,14 +825,14 @@ const ContentManagement = () => {
 
             <div className="grid gap-4 sm:grid-cols-[1fr_120px]">
               <label className="flex flex-col gap-2">
-                <span className="text-xs uppercase tracking-widest text-white/60">Precio recomendado</span>
+                <span className="text-xs uppercase tracking-widest text-white/60">Precio base</span>
                 <input
                   type="number"
                   min="0"
                   step="0.01"
-                  name="retailPrice"
-                  value={productForm.retailPrice}
-                  onChange={handleProductFormChange}
+                  name="basePrice"
+                  value={catalogForm.basePrice}
+                  onChange={handleCatalogFormChange}
                   className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
                   placeholder="0.00"
                 />
@@ -585,8 +841,8 @@ const ContentManagement = () => {
                 <span className="text-xs uppercase tracking-widest text-white/60">Moneda</span>
                 <input
                   name="currency"
-                  value={productForm.currency}
-                  onChange={handleProductFormChange}
+                  value={catalogForm.currency}
+                  onChange={handleCatalogFormChange}
                   className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm uppercase text-white placeholder:text-white/30 focus:border-white focus:outline-none"
                   maxLength={3}
                   placeholder="EUR"
@@ -596,115 +852,103 @@ const ContentManagement = () => {
 
             <label className="flex flex-col gap-2">
               <span className="text-xs uppercase tracking-widest text-white/60">Modo de ajuste</span>
-              <select
-                name="sizing"
-                value={productForm.sizing}
-                onChange={handleProductFormChange}
-                className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white focus:border-white focus:outline-none"
-              >
-                <option value="fillPrintArea">fillPrintArea</option>
-                <option value="fitPrintArea">fitPrintArea</option>
-                <option value="stretchToPrintArea">stretchToPrintArea</option>
-              </select>
+              <input
+                name="defaultSizing"
+                value={catalogForm.defaultSizing}
+                onChange={handleCatalogFormChange}
+                className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
+                placeholder="fillPrintArea"
+              />
             </label>
 
             <label className="flex flex-col gap-2">
               <span className="text-xs uppercase tracking-widest text-white/60">Descripción</span>
               <textarea
                 name="description"
-                value={productForm.description}
-                onChange={handleProductFormChange}
+                value={catalogForm.description}
+                onChange={handleCatalogFormChange}
                 rows={3}
                 className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
                 placeholder="Detalles del producto, materiales, acabados..."
               />
             </label>
 
-            <div className="flex flex-col gap-2">
-              <span className="text-xs uppercase tracking-widest text-white/60">Mockups</span>
-              {productForm.mockupImages?.length ? (
-                <div className="flex gap-2 overflow-x-auto">
-                  {productForm.mockupImages.map((imagePath) => (
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs uppercase tracking-widest text-white/60">
+                  Colores disponibles
+                </span>
+                <button
+                  type="button"
+                  onClick={addCatalogColor}
+                  className="text-xs uppercase tracking-[0.3em] text-white/60 transition hover:text-white"
+                >
+                  Añadir color
+                </button>
+              </div>
+              {catalogAvailableColors.length === 0 ? (
+                <p className="text-[0.65rem] text-white/40">
+                  Añade códigos de color para reutilizarlos en las variantes por fotografía.
+                </p>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {catalogAvailableColors.map((color) => (
                     <div
-                      key={imagePath}
-                      className="group relative h-24 w-32 flex-none overflow-hidden rounded-xl border border-white/10"
+                      key={color.clientId}
+                      className="grid gap-2 rounded-xl border border-white/10 bg-black/30 p-3 sm:grid-cols-[120px_1fr_auto]"
                     >
-                      <img
-                        src={`${backendBase}${imagePath}`}
-                        alt="Mockup guardado"
-                        className="h-full w-full object-cover"
+                      <input
+                        value={color.code}
+                        onChange={(event) =>
+                          updateCatalogColor(color.clientId, "code", event.target.value)
+                        }
+                        placeholder="HEX"
+                        className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs uppercase text-white focus:border-white/30 focus:outline-none"
+                      />
+                      <input
+                        value={color.name}
+                        onChange={(event) =>
+                          updateCatalogColor(color.clientId, "name", event.target.value)
+                        }
+                        placeholder="Descripción"
+                        className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs text-white focus:border-white/30 focus:outline-none"
                       />
                       <button
                         type="button"
-                        onClick={() => handleRemoveExistingProductImage(imagePath)}
-                        className="absolute right-2 top-2 hidden rounded-full bg-black/70 px-2 py-1 text-[0.6rem] uppercase tracking-[0.2em] text-white shadow group-hover:block"
+                        onClick={() => removeCatalogColor(color.clientId)}
+                        className="rounded-full border border-red-400/40 px-3 py-2 text-[0.6rem] uppercase tracking-[0.3em] text-red-200 transition hover:border-red-200/80"
                       >
                         Quitar
                       </button>
                     </div>
                   ))}
                 </div>
-              ) : null}
-
-              {productImageFiles.length ? (
-                <div className="flex gap-2 overflow-x-auto">
-                  {productImageFiles.map((item) => (
-                    <div
-                      key={item.preview}
-                      className="group relative h-24 w-32 flex-none overflow-hidden rounded-xl border border-dashed border-white/20"
-                    >
-                      <img
-                        src={item.preview}
-                        alt="Nuevo mockup"
-                        className="h-full w-full object-cover"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveNewProductImage(item.preview)}
-                        className="absolute right-2 top-2 hidden rounded-full bg-black/70 px-2 py-1 text-[0.6rem] uppercase tracking-[0.2em] text-white shadow group-hover:block"
-                      >
-                        Quitar
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-
-              <label className="flex w-full cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-white/20 bg-black/30 px-4 py-6 text-center text-xs uppercase tracking-[0.3em] text-white/60 transition hover:border-white/40 hover:text-white">
-                <span>Subir mockups</span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={handleProductImageChange}
-                  className="hidden"
-                />
-              </label>
+              )}
             </div>
 
-            {productError && (
-              <p className="text-xs text-red-300">{productError}</p>
+            {catalogMessage.error && (
+              <p className="text-xs text-red-300">{catalogMessage.error}</p>
             )}
-            {productSuccess && (
-              <p className="text-xs text-emerald-300">{productSuccess}</p>
+            {catalogMessage.success && (
+              <p className="text-xs text-emerald-300">{catalogMessage.success}</p>
             )}
 
             <div className="flex flex-wrap gap-3">
               <button
                 type="submit"
-                disabled={productSubmitting}
+                disabled={catalogSubmitting}
                 className="rounded-full bg-white px-6 py-3 text-xs font-semibold uppercase tracking-[0.35em] text-black transition hover:bg-white/80 disabled:cursor-not-allowed disabled:bg-white/40"
               >
-                {productSubmitting
+                {catalogSubmitting
                   ? "Guardando..."
-                  : editingProductId
+                  : catalogEditingId
                   ? "Guardar cambios"
                   : "Crear producto"}
               </button>
-              {editingProductId && (
+              {catalogEditingId && (
                 <button
                   type="button"
-                  onClick={handleCancelProductEdit}
+                  onClick={resetCatalogForm}
                   className="rounded-full border border-white/30 px-6 py-3 text-xs font-semibold uppercase tracking-[0.35em] text-white transition hover:border-white/60 hover:text-white"
                 >
                   Cancelar
@@ -714,12 +958,12 @@ const ContentManagement = () => {
           </form>
 
           <div className="flex flex-col gap-4">
-            {prodigiProducts.length === 0 ? (
+            {catalogProducts.length === 0 ? (
               <p className="text-sm text-white/50">
                 Aún no has creado productos. Completa el formulario para dar de alta tus opciones de impresión.
               </p>
             ) : (
-              prodigiProducts.map((product) => (
+              catalogProducts.map((product) => (
                 <article
                   key={product._id}
                   className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-black/40 p-4 shadow"
@@ -736,36 +980,36 @@ const ContentManagement = () => {
                     <p className="text-sm text-white/70">{product.description}</p>
                   )}
                   <div className="flex flex-wrap items-center gap-3 text-xs text-white/60">
-                    {product.retailPrice !== undefined && product.retailPrice !== null && (
+                    {product.basePrice !== undefined && product.basePrice !== null && (
                       <span>
-                        Precio: {Number(product.retailPrice).toFixed(2)} {product.currency || "EUR"}
+                        Precio base: {Number(product.basePrice).toFixed(2)} {product.currency || "EUR"}
                       </span>
                     )}
-                    <span>Modo: {product.sizing}</span>
+                    {product.defaultSizing && <span>Modo: {product.defaultSizing}</span>}
                   </div>
-                  {product.mockupImages?.length ? (
-                    <div className="flex gap-2 overflow-x-auto">
-                      {product.mockupImages.map((imagePath) => (
-                        <img
-                          key={imagePath}
-                          src={`${backendBase}${imagePath}`}
-                          alt={`Mockup ${product.name}`}
-                          className="h-16 w-24 flex-none rounded-lg border border-white/10 object-cover"
-                        />
+                  {product.availableColors?.length ? (
+                    <div className="flex flex-wrap gap-2 text-[0.6rem] text-white/50">
+                      {product.availableColors.map((color) => (
+                        <span
+                          key={`${product._id}-${color.code}`}
+                          className="rounded-full border border-white/20 px-3 py-1 uppercase tracking-[0.25em]"
+                        >
+                          {color.name || color.code}
+                        </span>
                       ))}
                     </div>
                   ) : null}
                   <div className="flex gap-2">
                     <button
                       type="button"
-                      onClick={() => handleEditProduct(product)}
+                      onClick={() => handleEditCatalogProduct(product)}
                       className="rounded-full border border-white/30 px-4 py-2 text-[0.6rem] font-semibold uppercase tracking-[0.3em] text-white transition hover:border-white/60 hover:text-white"
                     >
                       Editar
                     </button>
                     <button
                       type="button"
-                      onClick={() => handleDeleteProduct(product._id)}
+                      onClick={() => handleDeleteCatalogProduct(product._id)}
                       className="rounded-full border border-red-300/40 px-4 py-2 text-[0.6rem] font-semibold uppercase tracking-[0.3em] text-red-200 transition hover:border-red-200/80"
                     >
                       Eliminar
@@ -779,73 +1023,552 @@ const ContentManagement = () => {
       </section>
 
       <section className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-xl backdrop-blur lg:p-8">
+        <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-2xl font-semibold uppercase tracking-[0.3em] text-white">
+              Variantes por fotografía
+            </h2>
+            <p className="mt-1 text-sm text-white/60">
+              Elige una fotografía y configura qué productos puede comprar el usuario final, con sus mockups y colores disponibles.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs uppercase tracking-[0.3em] text-white/50">
+              Fotografía
+            </span>
+            <select
+              value={selectedPhotoId}
+              onChange={async (event) => {
+                const value = event.target.value;
+                setSelectedPhotoId(value);
+                resetVariantForm();
+                setVariantMessage({ success: null, error: null });
+                if (value) {
+                  await fetchPhotoVariants(value);
+                }
+              }}
+              className="rounded-xl border border-white/20 bg-black/40 px-3 py-2 text-xs text-white focus:border-white/40 focus:outline-none"
+            >
+              <option value="">Selecciona una fotografía</option>
+              {photos.map((photoItem) => (
+                <option key={photoItem._id} value={photoItem._id}>
+                  {photoItem.title || photoItem._id}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {selectedPhoto ? (
+          <div className="grid gap-8 lg:grid-cols-[420px_1fr]">
+            <form onSubmit={handleVariantSubmit} className="flex flex-col gap-4">
+              <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-xs text-white/70">
+                <p className="text-[0.65rem] uppercase tracking-[0.3em] text-white/40">
+                  Fotografía seleccionada
+                </p>
+                <h3 className="mt-2 text-sm font-semibold uppercase tracking-[0.2em] text-white">
+                  {selectedPhoto.title}
+                </h3>
+                <p className="mt-1 text-[0.7rem] text-white/50">
+                  {new Date(selectedPhoto.createdAt || Date.now()).toLocaleDateString()}
+                </p>
+              </div>
+
+              <label className="flex flex-col gap-2">
+                <span className="text-xs uppercase tracking-widest text-white/60">Producto del catálogo*</span>
+                <select
+                  value={variantForm.catalogProductId}
+                  onChange={(event) =>
+                    handleVariantFieldChange("catalogProductId", event.target.value)
+                  }
+                  className="rounded-xl border border-white/20 bg-black/40 px-3 py-2 text-xs text-white focus:border-white/40 focus:outline-none"
+                  required
+                >
+                  <option value="">Selecciona un SKU</option>
+                  {catalogProducts.map((product) => (
+                    <option key={product._id} value={product._id}>
+                      {product.name} · {product.sku}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="flex flex-col gap-2">
+                  <span className="text-xs uppercase tracking-widest text-white/60">Nombre</span>
+                  <input
+                    value={variantForm.displayName}
+                    onChange={(event) =>
+                      handleVariantFieldChange("displayName", event.target.value)
+                    }
+                    placeholder="Canvas 10x10 Mate"
+                    className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
+                  />
+                </label>
+                <label className="flex flex-col gap-2">
+                  <span className="text-xs uppercase tracking-widest text-white/60">Precio</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={variantForm.retailPrice}
+                    onChange={(event) =>
+                      handleVariantFieldChange("retailPrice", event.target.value)
+                    }
+                    placeholder="0.00"
+                    className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
+                  />
+                </label>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="flex flex-col gap-2">
+                  <span className="text-xs uppercase tracking-widest text-white/60">Moneda</span>
+                  <input
+                    value={variantForm.currency}
+                    onChange={(event) =>
+                      handleVariantFieldChange("currency", event.target.value)
+                    }
+                    maxLength={3}
+                    className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm uppercase text-white placeholder:text-white/30 focus:border-white focus:outline-none"
+                  />
+                </label>
+                <label className="flex flex-col gap-2">
+                  <span className="text-xs uppercase tracking-widest text-white/60">Modo de ajuste</span>
+                  <input
+                    value={variantForm.sizing}
+                    onChange={(event) =>
+                      handleVariantFieldChange("sizing", event.target.value)
+                    }
+                    placeholder="fillPrintArea"
+                    className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
+                  />
+                </label>
+              </div>
+
+              <label className="flex flex-col gap-2">
+                <span className="text-xs uppercase tracking-widest text-white/60">Descripción</span>
+                <textarea
+                  value={variantForm.description}
+                  onChange={(event) =>
+                    handleVariantFieldChange("description", event.target.value)
+                  }
+                  rows={3}
+                  className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
+                  placeholder="Notas específicas para esta fotografía"
+                />
+              </label>
+
+              <label className="flex items-center gap-2 text-xs uppercase tracking-[0.3em] text-white/60">
+                <input
+                  type="checkbox"
+                  checked={variantForm.isActive}
+                  onChange={(event) =>
+                    handleVariantFieldChange("isActive", event.target.checked)
+                  }
+                  className="h-4 w-4 rounded border-white/30 bg-transparent text-white accent-white"
+                />
+                Variante activa
+              </label>
+
+              <label className="flex flex-col gap-2">
+                <span className="text-xs uppercase tracking-widest text-white/60">Asset URL personalizado</span>
+                <input
+                  value={variantForm.assetUrl}
+                  onChange={(event) =>
+                    handleVariantFieldChange("assetUrl", event.target.value)
+                  }
+                  placeholder="https://..."
+                  className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
+                />
+              </label>
+
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs uppercase tracking-widest text-white/60">
+                    Mockups
+                  </span>
+                  <label className="cursor-pointer text-[0.6rem] uppercase tracking-[0.3em] text-white/60 transition hover:text-white">
+                    Añadir imágenes
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      onChange={handleVariantMockupUpload}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  {variantForm.existingMockupImages.length === 0 &&
+                  variantForm.newMockups.length === 0 ? (
+                    <p className="text-[0.65rem] text-white/40">
+                      Sube mockups para mostrar cómo se verá la impresión.
+                    </p>
+                  ) : null}
+
+                  {variantForm.existingMockupImages.length > 0 && (
+                    <div className="flex flex-col gap-2">
+                      <p className="text-[0.65rem] text-white/40">Imágenes guardadas</p>
+                      <div className="flex gap-2 overflow-x-auto">
+                        {variantForm.existingMockupImages.map((image) => (
+                          <div
+                            key={image.id}
+                            className="group relative h-24 w-32 flex-none overflow-hidden rounded-xl border border-white/10"
+                          >
+                            <img
+                              src={variantMockupSource(image)}
+                              alt="Mockup guardado"
+                              className="h-full w-full object-cover"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => removeExistingVariantMockup(image.id)}
+                              className="absolute right-2 top-2 hidden rounded-full bg-black/70 px-2 py-1 text-[0.6rem] uppercase tracking-[0.2em] text-white shadow group-hover:block"
+                            >
+                              Quitar
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {variantForm.newMockups.length > 0 && (
+                    <div className="flex flex-col gap-2">
+                      <p className="text-[0.65rem] text-white/40">Nuevos mockups</p>
+                      <div className="flex gap-2 overflow-x-auto">
+                        {variantForm.newMockups.map((item) => (
+                          <div
+                            key={item.tempId}
+                            className="group relative h-24 w-32 flex-none overflow-hidden rounded-xl border border-dashed border-white/20"
+                          >
+                            <img
+                              src={item.preview}
+                              alt="Nuevo mockup"
+                              className="h-full w-full object-cover"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => removeNewVariantMockup(item.tempId)}
+                              className="absolute right-2 top-2 hidden rounded-full bg-black/70 px-2 py-1 text-[0.6rem] uppercase tracking-[0.2em] text-white shadow group-hover:block"
+                            >
+                              Quitar
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs uppercase tracking-widest text-white/60">
+                    Colores de la variante
+                  </span>
+                  <button
+                    type="button"
+                    onClick={addVariantColor}
+                    className="text-[0.6rem] uppercase tracking-[0.3em] text-white/60 transition hover:text-white"
+                  >
+                    Añadir color
+                  </button>
+                </div>
+
+                {variantForm.colorOptions.length === 0 ? (
+                  <p className="text-[0.65rem] text-white/40">
+                    Selecciona un producto del catálogo para importar sus colores o añade colores personalizados.
+                  </p>
+                ) : (
+                  <div className="flex flex-col gap-3">
+                    {variantForm.colorOptions.map((color) => (
+                      <div
+                        key={color.clientId}
+                        className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-black/30 p-4"
+                      >
+                        <div className="grid gap-2 sm:grid-cols-[120px_1fr_auto]">
+                          <input
+                            value={color.code}
+                            onChange={(event) =>
+                              updateVariantColor(color.clientId, "code", event.target.value)
+                            }
+                            placeholder="Código"
+                            className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs uppercase text-white focus:border-white/30 focus:outline-none"
+                          />
+                          <input
+                            value={color.name}
+                            onChange={(event) =>
+                              updateVariantColor(color.clientId, "name", event.target.value)
+                            }
+                            placeholder="Nombre"
+                            className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs text-white focus:border-white/30 focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => removeVariantColor(color.clientId)}
+                            className="rounded-full border border-red-400/40 px-3 py-2 text-[0.6rem] uppercase tracking-[0.2em] text-red-200 transition hover:border-red-200/80"
+                          >
+                            Quitar
+                          </button>
+                        </div>
+
+                        <input
+                          value={color.assetUrl}
+                          onChange={(event) =>
+                            updateVariantColor(color.clientId, "assetUrl", event.target.value)
+                          }
+                          placeholder="Asset URL específico (opcional)"
+                          className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs text-white placeholder:text-white/30 focus:border-white/30 focus:outline-none"
+                        />
+
+                        <div className="flex flex-col gap-2">
+                          <p className="text-[0.6rem] uppercase tracking-[0.3em] text-white/40">
+                            Mockups asociados
+                          </p>
+                          <div className="flex flex-wrap gap-2 text-[0.65rem] text-white/70">
+                            {[...variantForm.existingMockupImages.map((image) => ({
+                              ref: image.id,
+                              label: image.label || image.id,
+                              url: variantMockupSource(image),
+                            })),
+                              ...variantForm.newMockups.map((image) => ({
+                                ref: image.tempId,
+                                label: image.file.name,
+                                url: image.preview,
+                              }))].map((item) => {
+                              const isChecked = color.mockupImageRefs.includes(item.ref);
+                              return (
+                                <button
+                                  key={`${color.clientId}-${item.ref}`}
+                                  type="button"
+                                  onClick={() => toggleVariantColorMockup(color.clientId, item.ref)}
+                                  className={`rounded-full border px-3 py-1 uppercase tracking-[0.25em] transition ${
+                                    isChecked
+                                      ? "border-white bg-white/20 text-white"
+                                      : "border-white/30 text-white/60 hover:border-white/50 hover:text-white"
+                                  }`}
+                                >
+                                  {item.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {variantMessage.error && (
+                <p className="text-xs text-red-300">{variantMessage.error}</p>
+              )}
+              {variantMessage.success && (
+                <p className="text-xs text-emerald-300">{variantMessage.success}</p>
+              )}
+
+              <div className="flex flex-wrap gap-3">
+                <button
+                  type="submit"
+                  disabled={variantSubmitting}
+                  className="rounded-full bg-white px-6 py-3 text-xs font-semibold uppercase tracking-[0.35em] text-black transition hover:bg-white/80 disabled:cursor-not-allowed disabled:bg-white/40"
+                >
+                  {variantSubmitting
+                    ? "Guardando..."
+                    : variantEditingId
+                    ? "Guardar cambios"
+                    : "Crear variante"}
+                </button>
+                {variantEditingId && (
+                  <button
+                    type="button"
+                    onClick={handleCancelVariantEdit}
+                    className="rounded-full border border-white/30 px-6 py-3 text-xs font-semibold uppercase tracking-[0.35em] text-white transition hover:border-white/60 hover:text-white"
+                  >
+                    Cancelar
+                  </button>
+                )}
+              </div>
+            </form>
+
+            <div className="flex flex-col gap-4">
+              {selectedPhotoVariants.length === 0 ? (
+                <p className="text-sm text-white/50">
+                  No hay variantes configuradas para esta fotografía. Crea una para ofrecer productos específicos.
+                </p>
+              ) : (
+                selectedPhotoVariants.map((variant) => (
+                  <article
+                    key={variant.id}
+                    className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-black/40 p-4"
+                  >
+                    <header className="flex flex-col gap-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <h3 className="text-base font-semibold uppercase tracking-[0.25em] text-white">
+                          {variant.displayName || variant.catalogProduct?.name}
+                        </h3>
+                        <span
+                          className={`rounded-full px-3 py-1 text-[0.6rem] uppercase tracking-[0.25em] ${
+                            variant.isActive
+                              ? "border border-emerald-300/40 text-emerald-200"
+                              : "border border-white/20 text-white/50"
+                          }`}
+                        >
+                          {variant.isActive ? "Activa" : "Inactiva"}
+                        </span>
+                      </div>
+                      <p className="text-[0.65rem] uppercase tracking-[0.3em] text-white/40">
+                        SKU: {variant.catalogProduct?.sku}
+                      </p>
+                    </header>
+                    {variant.description && (
+                      <p className="text-sm text-white/70">{variant.description}</p>
+                    )}
+                    <div className="flex flex-wrap items-center gap-3 text-xs text-white/60">
+                      {variant.retailPrice !== undefined && variant.retailPrice !== null && (
+                        <span>
+                          Precio: {Number(variant.retailPrice).toFixed(2)} {variant.currency || "EUR"}
+                        </span>
+                      )}
+                      {variant.sizing && <span>Modo: {variant.sizing}</span>}
+                    </div>
+                    {variant.mockupImages?.length ? (
+                      <div className="flex gap-2 overflow-x-auto">
+                        {variant.mockupImages.map((image) => (
+                          <img
+                            key={image.id}
+                            src={variantMockupSource(image)}
+                            alt="Mockup"
+                            className="h-16 w-24 flex-none rounded-lg border border-white/10 object-cover"
+                          />
+                        ))}
+                      </div>
+                    ) : null}
+                    {variant.colorOptions?.length ? (
+                      <div className="flex flex-wrap gap-2 text-[0.6rem] text-white/50">
+                        {variant.colorOptions.map((color) => (
+                          <span
+                            key={`${variant.id}-${color.code}`}
+                            className="rounded-full border border-white/20 px-3 py-1 uppercase tracking-[0.25em]"
+                          >
+                            {color.name || color.code}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => loadVariantIntoForm(variant)}
+                        className="rounded-full border border-white/30 px-4 py-2 text-[0.6rem] font-semibold uppercase tracking-[0.3em] text-white transition hover:border-white/60 hover:text-white"
+                      >
+                        Editar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteVariant(selectedPhotoId, variant.id)}
+                        className="rounded-full border border-red-300/40 px-4 py-2 text-[0.6rem] font-semibold uppercase tracking-[0.3em] text-red-200 transition hover:border-red-200/80"
+                      >
+                        Eliminar
+                      </button>
+                    </div>
+                  </article>
+                ))
+              )}
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-white/50">
+            Selecciona una fotografía para configurar sus variantes de impresión.
+          </p>
+        )}
+      </section>
+
+      <section className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-xl backdrop-blur lg:p-8">
         <div className="mb-6 flex items-center justify-between">
           <h2 className="text-2xl font-semibold uppercase tracking-[0.3em] text-white">
             Biblioteca
           </h2>
           <span className="text-xs uppercase tracking-[0.3em] text-white/40">
-            {sortedPhotos.length} elementos
+            {photos.length} elementos
           </span>
         </div>
 
-        {sortedPhotos.length === 0 ? (
+        {photos.length === 0 ? (
           <p className="text-sm text-white/50">
             Aún no has añadido fotografías. Cuando subas una imagen aparecerá aquí con sus metadatos.
           </p>
         ) : (
           <div className="grid gap-6 md:grid-cols-2">
-            {sortedPhotos.map((photo) => (
+            {photos.map((photoItem) => (
               <article
-                key={photo._id}
+                key={photoItem._id}
                 className="flex flex-col overflow-hidden rounded-2xl border border-white/10 bg-black/40 shadow-lg"
               >
                 <div className="relative h-56 w-full overflow-hidden">
                   <img
-                    src={`${import.meta.env.VITE_URL_BACKEND}${photo.imagePath}`}
-                    alt={photo.title}
+                    src={`${import.meta.env.VITE_URL_BACKEND}${photoItem.imagePath}`}
+                    alt={photoItem.title}
                     className="h-full w-full object-cover"
                   />
                   <span className="absolute left-4 top-4 rounded-full bg-white/10 px-3 py-1 text-xs uppercase tracking-[0.3em] text-white/80 backdrop-blur">
-                    {photo.price ? `${Number(photo.price).toFixed(2)} €` : "Sin precio"}
+                    {photoItem.price ? `${Number(photoItem.price).toFixed(2)} €` : "Sin precio"}
                   </span>
                 </div>
                 <div className="flex flex-col gap-3 p-5 text-sm text-white/80">
                   <header>
-                    <h3 className="text-lg font-semibold uppercase tracking-[0.2em] text-white">
-                      {photo.title}
-                    </h3>
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-lg font-semibold uppercase tracking-[0.2em] text-white">
+                        {photoItem.title}
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          setSelectedPhotoId(photoItem._id);
+                          resetVariantForm();
+                          setVariantMessage({ success: null, error: null });
+                          await fetchPhotoVariants(photoItem._id);
+                        }}
+                        className="rounded-full border border-white/30 px-3 py-1 text-[0.6rem] uppercase tracking-[0.3em] text-white transition hover:border-white/60 hover:text-white"
+                      >
+                        Configurar impresiones
+                      </button>
+                    </div>
                     <p className="mt-2 text-xs uppercase tracking-[0.3em] text-white/40">
-                      {photo.createdAt ? new Date(photo.createdAt).toLocaleDateString() : ""}
+                      {photoItem.createdAt ? new Date(photoItem.createdAt).toLocaleDateString() : ""}
                     </p>
                   </header>
-                  {photo.description && (
-                    <p className="text-sm text-white/70">{photo.description}</p>
+                  {photoItem.description && (
+                    <p className="text-sm text-white/70">{photoItem.description}</p>
                   )}
                   <dl className="grid grid-cols-1 gap-2 text-xs text-white/50 sm:grid-cols-2">
-                    {photo.metadata?.camera && (
+                    {photoItem.metadata?.camera && (
                       <div>
                         <dt className="uppercase tracking-[0.3em]">Cámara</dt>
-                        <dd className="mt-1 text-white/70">{photo.metadata.camera}</dd>
+                        <dd className="mt-1 text-white/70">{photoItem.metadata.camera}</dd>
                       </div>
                     )}
-                    {photo.metadata?.location && (
+                    {photoItem.metadata?.location && (
                       <div>
                         <dt className="uppercase tracking-[0.3em]">Ubicación</dt>
-                        <dd className="mt-1 text-white/70">{photo.metadata.location}</dd>
+                        <dd className="mt-1 text-white/70">{photoItem.metadata.location}</dd>
                       </div>
                     )}
-                    {photo.metadata?.shotAt && (
+                    {photoItem.metadata?.shotAt && (
                       <div>
                         <dt className="uppercase tracking-[0.3em]">Capturada</dt>
                         <dd className="mt-1 text-white/70">
-                          {new Date(photo.metadata.shotAt).toLocaleDateString()}
+                          {new Date(photoItem.metadata.shotAt).toLocaleDateString()}
                         </dd>
                       </div>
                     )}
                   </dl>
-                  {photo.tags?.length > 0 && (
+                  {photoItem.tags?.length > 0 && (
                     <div className="flex flex-wrap gap-2">
-                      {photo.tags.map((tag) => (
+                      {photoItem.tags.map((tag) => (
                         <span
                           key={tag}
                           className="rounded-full bg-white/10 px-3 py-1 text-[0.65rem] uppercase tracking-[0.3em] text-white/60"
@@ -855,48 +1578,6 @@ const ContentManagement = () => {
                       ))}
                     </div>
                   )}
-                  <div className="mt-4 border-t border-white/10 pt-4">
-                    <h4 className="text-xs font-semibold uppercase tracking-[0.3em] text-white/60">
-                      Productos asociados
-                    </h4>
-                    {prodigiProducts.length === 0 ? (
-                      <p className="mt-2 text-xs text-white/40">
-                        Crea productos en la sección superior para asignarlos a esta fotografía.
-                      </p>
-                    ) : (
-                      <div className="mt-2 flex flex-col gap-2">
-                        {prodigiProducts.map((product) => {
-                          const productId = String(product._id);
-                          const isChecked = Array.isArray(photo.prodigiProducts)
-                            ? photo.prodigiProducts.includes(productId)
-                            : false;
-                          return (
-                            <label
-                              key={product._id}
-                              className="flex items-center gap-3 text-xs text-white/70"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={isChecked}
-                                onChange={(event) =>
-                                  handlePhotoProductToggle(
-                                    photo._id,
-                                    productId,
-                                    event.target.checked
-                                  )
-                                }
-                                className="h-4 w-4 rounded border-white/40 bg-transparent text-white accent-white"
-                              />
-                              <span className="flex-1">
-                                {product.name}
-                                <span className="ml-2 text-white/30">{product.sku}</span>
-                              </span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
                 </div>
               </article>
             ))}
