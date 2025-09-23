@@ -17,6 +17,12 @@ const photoSchema = new mongoose.Schema(
       location: { type: String },
       shotAt: { type: Date },
     },
+    prodigiProducts: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "ProdigiProduct",
+      },
+    ],
   },
   { timestamps: true }
 );

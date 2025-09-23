@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import api from "@/utils/axiosInstance";
 
@@ -26,7 +26,7 @@ const PhotoDetail = () => {
   const [prodigiLoading, setProdigiLoading] = useState(false);
   const [prodigiError, setProdigiError] = useState(null);
   const [orderState, setOrderState] = useState({
-    productSku: "",
+    productId: "",
     copies: 1,
     recipient: {
       name: "",
@@ -70,18 +70,29 @@ const PhotoDetail = () => {
 
   useEffect(() => {
     const fetchProdigiProducts = async () => {
+      if (!photoId) return;
       try {
         setProdigiLoading(true);
-        const { data } = await api.get("/prodigi/products");
+        const { data } = await api.get("/prodigi/products", {
+          params: { photoId },
+        });
         const productsArray = Array.isArray(data) ? data : [];
         setProdigiProducts(productsArray);
         setProdigiError(null);
 
         if (productsArray.length > 0) {
-          setOrderState((prev) => ({
-            ...prev,
-            productSku: prev.productSku || productsArray[0].sku,
-          }));
+          setOrderState((prev) => {
+            const currentId = String(prev.productId || "");
+            const exists = productsArray.some(
+              (product) => String(product?._id) === currentId
+            );
+            return {
+              ...prev,
+              productId: exists ? currentId : productsArray[0]?._id || "",
+            };
+          });
+        } else {
+          setOrderState((prev) => ({ ...prev, productId: "" }));
         }
       } catch (err) {
         console.error("Error fetching Prodigi products", err);
@@ -95,7 +106,7 @@ const PhotoDetail = () => {
     };
 
     fetchProdigiProducts();
-  }, []);
+  }, [photoId]);
 
   const handleOrderFieldChange = (field, value) => {
     setOrderState((prev) => {
@@ -127,7 +138,7 @@ const PhotoDetail = () => {
   const handleOrderSubmit = async (event) => {
     event.preventDefault();
 
-    if (!photo?._id || !orderState.productSku) {
+    if (!photo?._id || !orderState.productId) {
       return;
     }
 
@@ -136,7 +147,7 @@ const PhotoDetail = () => {
     try {
       const { data } = await api.post("/prodigi/orders", {
         photoId: photo._id,
-        productSku: orderState.productSku,
+        productId: orderState.productId,
         copies: orderState.copies,
         recipient: orderState.recipient,
       });
@@ -177,8 +188,17 @@ const PhotoDetail = () => {
     }
   };
 
+  const selectedProduct = useMemo(() => {
+    if (!orderState.productId) return null;
+    return (
+      prodigiProducts.find(
+        (product) => String(product?._id) === String(orderState.productId)
+      ) || null
+    );
+  }, [prodigiProducts, orderState.productId]);
+
   useEffect(() => {
-    if (!orderState.productSku) {
+    if (!photo?._id || !orderState.productId) {
       setQuoteState({ loading: false, quote: null, error: null });
       return;
     }
@@ -191,7 +211,8 @@ const PhotoDetail = () => {
         const { data } = await api.post(
           "/prodigi/quotes",
           {
-            productSku: orderState.productSku,
+            photoId: photo._id,
+            productId: orderState.productId,
             copies: orderState.copies,
             destinationCountryCode:
               orderState.recipient.countryCode || "ES",
@@ -219,7 +240,8 @@ const PhotoDetail = () => {
 
     return () => controller.abort();
   }, [
-    orderState.productSku,
+    photo?._id,
+    orderState.productId,
     orderState.copies,
     orderState.recipient.countryCode,
   ]);
@@ -361,20 +383,31 @@ const PhotoDetail = () => {
                   </label>
                   <select
                     className={baseInputClasses}
-                    value={orderState.productSku}
+                    value={orderState.productId}
                     onChange={(event) =>
-                      handleOrderFieldChange("productSku", event.target.value)
+                      handleOrderFieldChange("productId", event.target.value)
                     }
                   >
                     {prodigiProducts.map((product) => (
-                      <option key={product.sku} value={product.sku}>
+                      <option key={product._id} value={product._id}>
                         {product.name}
                       </option>
                     ))}
                   </select>
                   <p className="text-[0.6rem] text-white/40">
-                    {prodigiProducts.find((item) => item.sku === orderState.productSku)?.description}
+                    {selectedProduct?.description || ""}
                   </p>
+                  {selectedProduct?.retailPrice ? (
+                    <p className="text-[0.6rem] text-white/50">
+                      Precio base sugerido:
+                      <span className="ml-1 text-white">
+                        {formatCurrency(
+                          selectedProduct.retailPrice,
+                          selectedProduct.currency
+                        )}
+                      </span>
+                    </p>
+                  ) : null}
                   {quoteState.loading ? (
                     <p className="text-[0.6rem] text-white/50">
                       Calculando precio...
@@ -399,6 +432,19 @@ const PhotoDetail = () => {
                           quoteCostShipping?.currency
                         )}
                       </p>
+                    </div>
+                  ) : null}
+                  {selectedProduct?.mockupImages?.length ? (
+                    <div className="mt-2 flex gap-2 overflow-x-auto">
+                      {selectedProduct.mockupImages.map((imagePath) => (
+                        <img
+                          key={imagePath}
+                          src={`${imageBase}${imagePath}`}
+                          alt={`Mockup ${selectedProduct.name}`}
+                          className="h-16 w-24 flex-none rounded-lg border border-white/10 object-cover"
+                          loading="lazy"
+                        />
+                      ))}
                     </div>
                   ) : null}
                 </div>
