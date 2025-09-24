@@ -130,6 +130,12 @@ export default function Header() {
         >
           Content Management
         </Link>
+        <Link 
+          to="/orders-management" 
+          className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 hover:text-coral"
+        >
+          Orders Management
+        </Link>
         <div className="border-t border-gray-100 my-1"></div>
         <button
           onClick={() => logout()}
@@ -192,6 +198,13 @@ export default function Header() {
           onClick={() => setIsMobileMenuOpen(false)}
         >
           Content Management
+        </Link>
+        <Link 
+          to="/orders-management" 
+          className="block py-2 text-base text-gray-700 hover:text-coral"
+          onClick={() => setIsMobileMenuOpen(false)}
+        >
+          Orders Management
         </Link>
         <button
           onClick={() => {

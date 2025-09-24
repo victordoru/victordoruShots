@@ -17,6 +17,7 @@ import SendResetPassword from "@/pages/auth/SendResetPassword";
 import ConfirmEmail from "@/pages/auth/ConfirmEmail";
 import Profile from "@/pages/profile/ProfilePage";
 import ContentManagement from "@/pages/profile/ContentManagement";
+import OrdersManagement from "@/pages/profile/OrdersManagement";
 import PhotoDetail from "@/pages/PhotoDetail";
 import Loader from "@/components/Loader";
 import Page404 from "@/components/Page404";
@@ -84,6 +85,14 @@ const App = () => {
               element={
                 <PrivateRoute>
                   <ContentManagement />
+                </PrivateRoute>
+              }
+            />
+            <Route
+              path="/orders-management"
+              element={
+                <PrivateRoute>
+                  <OrdersManagement />
                 </PrivateRoute>
               }
             />

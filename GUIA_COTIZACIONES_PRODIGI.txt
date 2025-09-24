@@ -1,0 +1,224 @@
+GUÍA PARA IMPLEMENTAR COTIZACIONES DE PRODIGI EN EL FRONTEND
+============================================================
+
+PROBLEMA IDENTIFICADO:
+=====================
+El sistema actual no puede hacer cotizaciones de Prodigi porque:
+1. No consulta los detalles del producto antes de hacer la cotización
+2. No incluye los atributos requeridos específicos de cada SKU
+3. Usa un payload fijo que no funciona para todos los productos
+
+SOLUCIÓN IMPLEMENTADA:
+=====================
+
+1. FLUJO CORRECTO PARA COTIZACIONES:
+   --------------------------------
+   a) Primero consultar detalles del producto por SKU: GET /products/{sku}
+   b) Extraer los atributos requeridos del primer variant del producto
+   c) Construir el payload de cotización con esos atributos específicos
+   d) Enviar la cotización: POST /Quotes
+
+2. ENDPOINTS DE PRODIGI UTILIZADOS:
+   --------------------------------
+   - GET /products/{sku} - Para obtener detalles y atributos requeridos
+   - POST /Quotes - Para solicitar cotización
+
+3. ESTRUCTURA DEL PAYLOAD CORRECTO:
+   --------------------------------
+   {
+     "shippingMethod": "Budget",
+     "destinationCountryCode": "ES",
+     "items": [
+       {
+         "sku": "SKU_DEL_PRODUCTO",
+         "copies": 1,
+         "attributes": {
+           // ATRIBUTOS ESPECÍFICOS DEL PRODUCTO (obtenidos del endpoint de detalles)
+         },
+         "assets": [
+           {
+             "printArea": "default"
+           }
+         ]
+       }
+     ]
+   }
+
+4. EJEMPLOS DE ATRIBUTOS POR TIPO DE PRODUCTO:
+   -------------------------------------------
+   
+   Para ART-FAP-SAP-10X15 (papel artístico):
+   {
+     "paperType": "SAP",
+     "substrateWeight": "240gsm"
+   }
+   
+   Para GLOBAL-CAN-10x10 (lienzo):
+   {
+     "edge": "38mm",
+     "frame": "38mm standard stretcher bar",
+     "paperType": "Standard canvas (SC)",
+     "substrateWeight": "400gsm",
+     "wrap": "Black"
+   }
+
+5. IMPLEMENTACIÓN EN EL FRONTEND:
+   ------------------------------
+   
+   FUNCIÓN 1: Obtener detalles del producto
+   ----------------------------------------
+   async function getProductDetails(sku) {
+     try {
+       const response = await fetch(`/api/prodigi/products/${encodeURIComponent(sku)}`);
+       const data = await response.json();
+       return data.product;
+     } catch (error) {
+       console.error('Error obteniendo detalles del producto:', error);
+       throw error;
+     }
+   }
+   
+   FUNCIÓN 2: Construir payload de cotización
+   ------------------------------------------
+   function buildQuotePayload(product, copies = 1) {
+     const variant = product.variants?.[0];
+     if (!variant) {
+       throw new Error("El producto no tiene variantes disponibles");
+     }
+   
+     const attributes = variant.attributes || {};
+   
+     return {
+       shippingMethod: "Budget",
+       destinationCountryCode: "ES",
+       items: [
+         {
+           sku: product.sku,
+           copies: Number(copies),
+           attributes,
+           assets: [
+             {
+               printArea: "default",
+             },
+           ],
+         },
+       ],
+     };
+   }
+   
+   FUNCIÓN 3: Solicitar cotización
+   ------------------------------
+   async function getQuote(sku, copies = 1) {
+     try {
+       // 1. Obtener detalles del producto
+       const product = await getProductDetails(sku);
+       
+       // 2. Construir payload con atributos correctos
+       const payload = buildQuotePayload(product, copies);
+       
+       // 3. Solicitar cotización
+       const response = await fetch('/api/prodigi/quotes', {
+         method: 'POST',
+         headers: {
+           'Content-Type': 'application/json',
+         },
+         body: JSON.stringify(payload),
+       });
+       
+       const quote = await response.json();
+       return quote;
+     } catch (error) {
+       console.error('Error obteniendo cotización:', error);
+       throw error;
+     }
+   }
+
+6. ENDPOINTS DEL BACKEND NECESARIOS:
+   ---------------------------------
+   
+   En el backend ya existen estas funciones en prodigiController.js:
+   - fetchCatalogProductDetails (líneas 457-536) - Consulta detalles del producto
+   - getQuote (líneas 1044-1138) - Solicita cotización
+   
+   RUTAS NECESARIAS (ya existen en prodigiRoutes.js):
+   - GET /catalog/details - Para obtener detalles del producto
+   - POST /quotes - Para solicitar cotización
+
+7. MODIFICACIONES NECESARIAS EN EL FRONTEND:
+   -----------------------------------------
+   
+   a) MODIFICAR LA FUNCIÓN DE COTIZACIÓN ACTUAL:
+      - No enviar atributos hardcodeados
+      - Primero consultar detalles del producto
+      - Usar los atributos específicos del producto
+   
+   b) AGREGAR FUNCIÓN PARA CONSULTAR DETALLES:
+      - Llamar al endpoint /api/prodigi/catalog/details
+      - Extraer los atributos del primer variant
+   
+   c) MEJORAR EL MANEJO DE ERRORES:
+      - Mostrar mensajes específicos si el SKU no existe
+      - Manejar errores de atributos faltantes
+   
+   d) AGREGAR LOADING STATES:
+      - Mostrar loading mientras se consultan los detalles
+      - Mostrar loading mientras se solicita la cotización
+
+8. EJEMPLO DE USO EN COMPONENTE REACT:
+   -----------------------------------
+   
+   const [quote, setQuote] = useState(null);
+   const [loading, setLoading] = useState(false);
+   const [error, setError] = useState(null);
+   
+   const handleGetQuote = async (sku, copies = 1) => {
+     setLoading(true);
+     setError(null);
+     
+     try {
+       const quoteData = await getQuote(sku, copies);
+       setQuote(quoteData);
+     } catch (err) {
+       setError(err.message);
+     } finally {
+       setLoading(false);
+     }
+   };
+   
+   // En el JSX:
+   {loading && <div>Obteniendo cotización...</div>}
+   {error && <div>Error: {error}</div>}
+   {quote && (
+     <div>
+       <h3>Cotización obtenida</h3>
+       <p>Costo total: {quote.quotes[0].costSummary.totalCost.amount} {quote.quotes[0].costSummary.totalCost.currency}</p>
+       <p>Envío: {quote.quotes[0].costSummary.shipping.amount} {quote.quotes[0].costSummary.shipping.currency}</p>
+     </div>
+   )}
+
+9. ARCHIVOS DE REFERENCIA:
+   -----------------------
+   - server/controllers/prodigiController.js (líneas 457-536, 1044-1138)
+   - server/routes/prodigiRoutes.js
+   - server/test-quote-smart.js (implementación completa de referencia)
+   - server/test-api.js (tests básicos)
+
+10. TESTING:
+    ---------
+    Para probar la funcionalidad:
+    - node server/test-quote-smart.js quote ART-FAP-SAP-10X15
+    - node server/test-quote-smart.js quote GLOBAL-CAN-10x10
+    - node server/test-quote-smart.js test ART-FAP-SAP-10X15 GLOBAL-CAN-10x10
+
+NOTAS IMPORTANTES:
+=================
+- Cada SKU tiene atributos diferentes, no se pueden hardcodear
+- Siempre consultar detalles del producto antes de cotizar
+- Usar el primer variant del producto para obtener los atributos
+- El campo 'url' en assets NO es necesario para cotizaciones
+- Manejar errores específicos (SKU no encontrado, atributos faltantes, etc.)
+
+RESULTADO ESPERADO:
+==================
+Un sistema que pueda cotizar cualquier SKU de Prodigi automáticamente,
+detectando los atributos requeridos y mostrando precios correctos al usuario.

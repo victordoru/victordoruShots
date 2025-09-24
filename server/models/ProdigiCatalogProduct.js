@@ -26,6 +26,10 @@ const prodigiCatalogProductSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    prodigiDescription: {
+      type: String,
+      trim: true,
+    },
     basePrice: {
       type: Number,
       min: 0,
@@ -46,8 +50,21 @@ const prodigiCatalogProductSchema = new mongoose.Schema(
       type: [colorOptionSchema],
       default: [],
     },
+    productDimensions: {
+      width: { type: Number },
+      height: { type: Number },
+      units: { type: String, trim: true },
+    },
+    printAreaPixels: {
+      width: { type: Number },
+      height: { type: Number },
+    },
     attributes: {
       type: mongoose.Schema.Types.Mixed,
+    },
+    shipsTo: {
+      type: [String],
+      default: [],
     },
   },
   { timestamps: true }

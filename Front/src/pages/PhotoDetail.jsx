@@ -83,6 +83,8 @@ const PhotoDetail = () => {
     error: null,
   });
 
+  const [productDetailsCache, setProductDetailsCache] = useState({});
+
   const imageBase = import.meta.env.VITE_URL_BACKEND;
 
   useEffect(() => {
@@ -196,6 +198,93 @@ const PhotoDetail = () => {
     return selectedVariant.mockupImages || [];
   }, [selectedVariant, selectedColorData]);
 
+  const selectedVariantSku = selectedVariant?.catalogProduct?.sku || null;
+  const selectedProductDetailsEntry = selectedVariantSku
+    ? productDetailsCache[selectedVariantSku]
+    : null;
+  const photoIdValue = photo?._id;
+
+  useEffect(() => {
+    if (!selectedVariantSku) return;
+
+    const cachedEntry = selectedProductDetailsEntry;
+
+    if (cachedEntry?.status === "loading" || cachedEntry?.status === "loaded") {
+      console.log("[Prodigi] product details already cached", {
+        sku: selectedVariantSku,
+        status: cachedEntry.status,
+      });
+      return;
+    }
+
+    let cancelled = false;
+
+    console.log("[Prodigi] fetching product details", {
+      sku: selectedVariantSku,
+      cachedStatus: cachedEntry?.status,
+    });
+
+    setProductDetailsCache((prev) => ({
+      ...prev,
+      [selectedVariantSku]: {
+        status: "loading",
+        data: cachedEntry?.data || null,
+        error: null,
+      },
+    }));
+
+    const fetchProductDetails = async () => {
+      try {
+        const { data } = await api.get(
+          `/prodigi/catalog/details/${encodeURIComponent(selectedVariantSku)}`
+        );
+        if (cancelled) {
+          console.log("[Prodigi] product details request cancelled", {
+            sku: selectedVariantSku,
+          });
+          return;
+        }
+        console.log("[Prodigi] product details loaded", {
+          sku: selectedVariantSku,
+          variantAttributes: data?.variantAttributes,
+        });
+        setProductDetailsCache((prev) => ({
+          ...prev,
+          [selectedVariantSku]: {
+            status: "loaded",
+            data,
+            error: null,
+          },
+        }));
+      } catch (err) {
+        if (cancelled) return;
+        const message =
+          err.response?.data?.error ||
+          "No se pudieron obtener los detalles del producto para cotizar.";
+        console.error("[Prodigi] product details failed", {
+          sku: selectedVariantSku,
+          error: message,
+          details: err.response?.data,
+        });
+        setProductDetailsCache((prev) => ({
+          ...prev,
+          [selectedVariantSku]: {
+            status: "error",
+            data: null,
+            error: message,
+          },
+        }));
+      }
+    };
+
+    fetchProductDetails();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedVariantSku]);
+
   const handleSelectVariant = (variantId) => {
     setOrderState((prev) => ({ ...prev, variantId, colorCode: "" }));
     setOrderFeedback({ submitting: false, success: null, error: null });
@@ -273,8 +362,59 @@ const PhotoDetail = () => {
   };
 
   useEffect(() => {
-    if (!photo?._id || !orderState.variantId) {
+    if (!photoIdValue || !orderState.variantId) {
       setQuoteState({ loading: false, quote: null, error: null });
+      return;
+    }
+
+    if (!selectedVariant) {
+      setQuoteState((prev) =>
+        prev.loading && !prev.quote && !prev.error
+          ? prev
+          : { loading: true, quote: null, error: null }
+      );
+      console.log("[Prodigi] waiting for variant before quote", {
+        photoId: photoIdValue,
+        variantId: orderState.variantId,
+      });
+      return;
+    }
+
+    if (!selectedVariantSku) {
+      setQuoteState({
+        loading: false,
+        quote: null,
+        error: "No se encontró el SKU del producto para cotizar.",
+      });
+      console.warn("[Prodigi] missing SKU for variant", {
+        variantId: orderState.variantId,
+      });
+      return;
+    }
+
+    if (!selectedProductDetailsEntry || selectedProductDetailsEntry.status === "loading") {
+      setQuoteState((prev) =>
+        prev.loading && !prev.quote && !prev.error
+          ? prev
+          : { loading: true, quote: null, error: null }
+      );
+      console.log("[Prodigi] awaiting product details before quote", {
+        sku: selectedVariantSku,
+        status: selectedProductDetailsEntry?.status || "missing",
+      });
+      return;
+    }
+
+    if (selectedProductDetailsEntry.status === "error") {
+      setQuoteState({
+        loading: false,
+        quote: null,
+        error: selectedProductDetailsEntry.error,
+      });
+      console.warn("[Prodigi] product details error prevents quote", {
+        sku: selectedVariantSku,
+        error: selectedProductDetailsEntry.error,
+      });
       return;
     }
 
@@ -287,21 +427,50 @@ const PhotoDetail = () => {
           ? orderState.colorCode || selectedVariant.colorOptions[0]?.code
           : undefined;
 
+        const detailsData = selectedProductDetailsEntry.data || {};
+        const variantAttributesCandidate =
+          detailsData.variantAttributes &&
+          typeof detailsData.variantAttributes === "object"
+            ? detailsData.variantAttributes
+            : null;
+        const attributesPayload =
+          variantAttributesCandidate ||
+          (detailsData.attributes && typeof detailsData.attributes === "object"
+            ? detailsData.attributes
+            : {});
+
+        console.log("[Prodigi] requesting quote", {
+          photoId: photoIdValue,
+          variantId: orderState.variantId,
+          sku: selectedVariantSku,
+          copies: orderState.copies,
+          colorCode: colorCodePayload,
+          destination: orderState.recipient.countryCode || "ES",
+          attributes: attributesPayload,
+        });
+
         const { data } = await api.post(
           "/prodigi/quotes",
           {
-            photoId: photo._id,
+            photoId: photoIdValue,
             variantId: orderState.variantId,
             colorCode: colorCodePayload,
             copies: orderState.copies,
             destinationCountryCode:
               orderState.recipient.countryCode || "ES",
+            productAttributes: attributesPayload,
           },
           { signal: controller.signal }
         );
 
         const quotesArray = Array.isArray(data?.quotes) ? data.quotes : [];
         const selectedQuote = quotesArray[0] || null;
+
+        console.log("[Prodigi] quote received", {
+          sku: selectedVariantSku,
+          copies: orderState.copies,
+          quote: selectedQuote,
+        });
 
         setQuoteState({ loading: false, quote: selectedQuote, error: null });
       } catch (err) {
@@ -312,6 +481,11 @@ const PhotoDetail = () => {
         const message =
           err.response?.data?.error ||
           "No pudimos calcular la cotización en este momento.";
+        console.error("[Prodigi] quote failed", {
+          sku: selectedVariantSku,
+          error: message,
+          details: err.response?.data,
+        });
         setQuoteState({ loading: false, quote: null, error: message });
       }
     };
@@ -320,12 +494,14 @@ const PhotoDetail = () => {
 
     return () => controller.abort();
   }, [
-    photo?._id,
+    photoIdValue,
     orderState.variantId,
+    selectedVariantSku,
     selectedVariant,
     orderState.colorCode,
     orderState.copies,
     orderState.recipient.countryCode,
+    selectedProductDetailsEntry,
   ]);
 
   if (loading) return <DetailSkeleton />;
@@ -366,6 +542,8 @@ const PhotoDetail = () => {
   const quoteTotalAmount = validItemsAmount + validShippingAmount;
   const quoteCurrency =
     quoteCostItems?.currency || quoteCostShipping?.currency || "EUR";
+  const productDetailsStatus = selectedProductDetailsEntry?.status || null;
+  const productDetailsError = selectedProductDetailsEntry?.error || null;
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-10 px-4 pb-24 pt-24 text-white">
@@ -547,7 +725,15 @@ const PhotoDetail = () => {
                   </p>
                 )}
 
-                {quoteState.loading ? (
+                {productDetailsStatus === "loading" ? (
+                  <p className="text-[0.6rem] text-white/50">
+                    Consultando especificaciones del producto...
+                  </p>
+                ) : productDetailsStatus === "error" ? (
+                  <p className="text-[0.6rem] text-red-300">
+                    {productDetailsError}
+                  </p>
+                ) : quoteState.loading ? (
                   <p className="text-[0.6rem] text-white/50">Calculando precio...</p>
                 ) : quoteState.error ? (
                   <p className="text-[0.6rem] text-red-300">{quoteState.error}</p>
@@ -560,7 +746,10 @@ const PhotoDetail = () => {
                       </span>
                     </p>
                     <p className="text-white/40">
-                      Productos: {formatCurrency(quoteCostItems?.amount, quoteCostItems?.currency)} · Envío:{" "}
+                      Productos: {formatCurrency(
+                        quoteCostItems?.amount,
+                        quoteCostItems?.currency
+                      )} · Envío:{" "}
                       {formatCurrency(
                         quoteCostShipping?.amount,
                         quoteCostShipping?.currency

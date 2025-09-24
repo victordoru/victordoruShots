@@ -1,4 +1,6 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import Cropper from "react-easy-crop";
+import "react-easy-crop/react-easy-crop.css";
 import api from "@/utils/axiosInstance";
 
 const photoInitialForm = {
@@ -19,6 +21,14 @@ const catalogInitialForm = {
   currency: "EUR",
   defaultSizing: "",
   availableColors: [],
+  prodigiDescription: "",
+  productWidth: "",
+  productHeight: "",
+  productUnits: "",
+  printPixelsWidth: "",
+  printPixelsHeight: "",
+  attributes: {},
+  shipsTo: [],
 };
 
 const variantInitialState = {
@@ -29,6 +39,7 @@ const variantInitialState = {
   currency: "EUR",
   sizing: "",
   assetUrl: "",
+  assetDetails: null,
   isActive: true,
   existingMockupImages: [],
   keepMockupImageIds: [],
@@ -43,6 +54,106 @@ const createClientId = () => {
   return `id-${Math.random().toString(36).slice(2, 10)}`;
 };
 
+const createImageElement = (url) =>
+  new Promise((resolve, reject) => {
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.onload = () => resolve(image);
+    image.onerror = (error) => reject(error);
+    image.src = url;
+  });
+
+const getRadianAngle = (degreeValue) => (degreeValue * Math.PI) / 180;
+
+const rotateSize = (width, height, rotation) => {
+  const rotRad = getRadianAngle(rotation);
+
+  return {
+    width:
+      Math.abs(Math.cos(rotRad) * width) + Math.abs(Math.sin(rotRad) * height),
+    height:
+      Math.abs(Math.sin(rotRad) * width) + Math.abs(Math.cos(rotRad) * height),
+  };
+};
+
+const getCroppedBlob = async (
+  imageSrc,
+  croppedAreaPixels,
+  outputWidth,
+  outputHeight,
+  rotation = 0
+) => {
+  const image = await createImageElement(imageSrc);
+
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+
+  const rotateCanvas = document.createElement("canvas");
+  const rotateCtx = rotateCanvas.getContext("2d");
+
+  const rotationRad = getRadianAngle(rotation);
+  const naturalWidth = image.naturalWidth || image.width;
+  const naturalHeight = image.naturalHeight || image.height;
+  const { width: rotatedWidth, height: rotatedHeight } = rotateSize(
+    naturalWidth,
+    naturalHeight,
+    rotation
+  );
+
+  rotateCanvas.width = rotatedWidth;
+  rotateCanvas.height = rotatedHeight;
+
+  rotateCtx.translate(rotatedWidth / 2, rotatedHeight / 2);
+  rotateCtx.rotate(rotationRad);
+  rotateCtx.drawImage(image, -naturalWidth / 2, -naturalHeight / 2);
+
+  const width = Math.max(1, Math.round(outputWidth || croppedAreaPixels.width));
+  const height = Math.max(
+    1,
+    Math.round(outputHeight || croppedAreaPixels.height)
+  );
+  canvas.width = width;
+  canvas.height = height;
+
+  const scaleX = rotateCanvas.width / naturalWidth;
+  const scaleY = rotateCanvas.height / naturalHeight;
+
+  ctx.drawImage(
+    rotateCanvas,
+    croppedAreaPixels.x * scaleX,
+    croppedAreaPixels.y * scaleY,
+    croppedAreaPixels.width * scaleX,
+    croppedAreaPixels.height * scaleY,
+    0,
+    0,
+    width,
+    height
+  );
+
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          reject(new Error("No se pudo generar el recorte"));
+          return;
+        }
+        resolve(blob);
+      },
+      "image/jpeg",
+      0.95
+    );
+  });
+};
+
+const getColorSwatchStyle = (code) => {
+  if (!code) return {};
+  const candidate = code.startsWith("#") ? code : `#${code}`;
+  if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(candidate)) {
+    return { backgroundColor: candidate };
+  }
+  return { backgroundColor: code };
+};
+
 const ContentManagement = () => {
   const [photos, setPhotos] = useState([]);
   const [photoForm, setPhotoForm] = useState(photoInitialForm);
@@ -55,6 +166,7 @@ const ContentManagement = () => {
   const [catalogForm, setCatalogForm] = useState(catalogInitialForm);
   const [catalogEditingId, setCatalogEditingId] = useState(null);
   const [catalogSubmitting, setCatalogSubmitting] = useState(false);
+  const [catalogFetching, setCatalogFetching] = useState(false);
   const [catalogMessage, setCatalogMessage] = useState({ success: null, error: null });
 
   const [selectedPhotoId, setSelectedPhotoId] = useState("");
@@ -63,6 +175,20 @@ const ContentManagement = () => {
   const [variantEditingId, setVariantEditingId] = useState(null);
   const [variantSubmitting, setVariantSubmitting] = useState(false);
   const [variantMessage, setVariantMessage] = useState({ success: null, error: null });
+  const backendBase = import.meta.env.VITE_URL_BACKEND;
+  const [assetEditor, setAssetEditor] = useState({
+    open: false,
+    variantId: "",
+    colorCode: "",
+    variantName: "",
+    colorName: "",
+    existingAsset: null,
+    imageSrc: "",
+    recommendedWidth: null,
+    recommendedHeight: null,
+    rotation: 0,
+  });
+  const [assetUploading, setAssetUploading] = useState(false);
 
   useEffect(() => {
     fetchPhotos();
@@ -111,6 +237,75 @@ const ContentManagement = () => {
           err.response?.data?.error ||
           "No se pudieron cargar los productos del catálogo",
       });
+    }
+  };
+
+  const handleCatalogFetch = async () => {
+    if (!catalogForm.sku.trim()) {
+      setCatalogMessage({
+        success: null,
+        error: "Introduce un SKU antes de importar datos de Prodigi",
+      });
+      return;
+    }
+
+    try {
+      setCatalogFetching(true);
+      setCatalogMessage({ success: null, error: null });
+
+      const { data } = await api.post("/prodigi/catalog/lookup", {
+        sku: catalogForm.sku.trim(),
+      });
+
+      const mappedColors = (data.availableColors || []).map((color) => ({
+        clientId: createClientId(),
+        code: color.code || "",
+        name: color.name || "",
+      }));
+
+      setCatalogForm((prev) => ({
+        ...prev,
+        name: data.prodigiName || prev.name,
+        description: prev.description || data.prodigiDescription || prev.description,
+        prodigiDescription: data.prodigiDescription || prev.prodigiDescription,
+        defaultSizing: data.defaultSizing || prev.defaultSizing,
+        availableColors:
+          mappedColors.length > 0 ? mappedColors : prev.availableColors,
+        productWidth:
+          data.productDimensions?.width !== undefined &&
+          data.productDimensions?.width !== null
+            ? String(data.productDimensions.width)
+            : prev.productWidth,
+        productHeight:
+          data.productDimensions?.height !== undefined &&
+          data.productDimensions?.height !== null
+            ? String(data.productDimensions.height)
+            : prev.productHeight,
+        productUnits:
+          data.productDimensions?.units || prev.productUnits,
+        printPixelsWidth:
+          data.printAreaPixels?.width !== undefined &&
+          data.printAreaPixels?.width !== null
+            ? String(data.printAreaPixels.width)
+            : prev.printPixelsWidth,
+        printPixelsHeight:
+          data.printAreaPixels?.height !== undefined &&
+          data.printAreaPixels?.height !== null
+            ? String(data.printAreaPixels.height)
+            : prev.printPixelsHeight,
+        attributes: data.attributes || prev.attributes,
+        shipsTo: data.shipsTo || prev.shipsTo,
+      }));
+
+      setCatalogMessage({ success: "Metadatos importados desde Prodigi", error: null });
+    } catch (err) {
+      console.error("Error fetching Prodigi metadata", err);
+      const message =
+        err.response?.data?.error ||
+        "No se pudieron obtener los datos del producto desde Prodigi";
+      setCatalogMessage({ success: null, error: message });
+    } finally {
+      setCatalogFetching(false);
     }
   };
 
@@ -270,6 +465,18 @@ const ContentManagement = () => {
           code: color.code?.trim().toUpperCase() || "",
           name: color.name?.trim() || "",
         })),
+        prodigiDescription: catalogForm.prodigiDescription,
+        productDimensions: {
+          width: catalogForm.productWidth,
+          height: catalogForm.productHeight,
+          units: catalogForm.productUnits,
+        },
+        printAreaPixels: {
+          width: catalogForm.printPixelsWidth,
+          height: catalogForm.printPixelsHeight,
+        },
+        attributes: catalogForm.attributes,
+        shipsTo: catalogForm.shipsTo,
       };
 
       if (catalogEditingId) {
@@ -309,6 +516,30 @@ const ContentManagement = () => {
         code: color.code || "",
         name: color.name || "",
       })),
+      prodigiDescription: product.prodigiDescription || "",
+      productWidth:
+        product.productDimensions?.width !== undefined &&
+        product.productDimensions?.width !== null
+          ? String(product.productDimensions.width)
+          : "",
+      productHeight:
+        product.productDimensions?.height !== undefined &&
+        product.productDimensions?.height !== null
+          ? String(product.productDimensions.height)
+          : "",
+      productUnits: product.productDimensions?.units || "",
+      printPixelsWidth:
+        product.printAreaPixels?.width !== undefined &&
+        product.printAreaPixels?.width !== null
+          ? String(product.printAreaPixels.width)
+          : "",
+      printPixelsHeight:
+        product.printAreaPixels?.height !== undefined &&
+        product.printAreaPixels?.height !== null
+          ? String(product.printAreaPixels.height)
+          : "",
+      attributes: product.attributes || {},
+      shipsTo: product.shipsTo || [],
     });
     setCatalogMessage({ success: null, error: null });
   };
@@ -486,6 +717,7 @@ const ContentManagement = () => {
       currency: variant.currency || "EUR",
       sizing: variant.sizing || "",
       assetUrl: variant.assetUrl || "",
+      assetDetails: variant.assetDetails || null,
       isActive: Boolean(variant.isActive),
       existingMockupImages: existingMockups,
       keepMockupImageIds: existingMockups.map((image) => image.id),
@@ -495,6 +727,7 @@ const ContentManagement = () => {
         code: color.code || "",
         name: color.name || "",
         assetUrl: color.assetUrl || "",
+        assetDetails: color.assetDetails || null,
         mockupImageRefs: Array.isArray(color.mockupImageRefs)
           ? [...color.mockupImageRefs]
           : [],
@@ -629,11 +862,142 @@ const ContentManagement = () => {
     [variantsByPhoto, selectedPhotoId]
   );
 
+  const closeAssetEditor = useCallback(() => {
+    setAssetEditor({
+      open: false,
+      variantId: "",
+      colorCode: "",
+      variantName: "",
+      colorName: "",
+      existingAsset: null,
+      imageSrc: "",
+      recommendedWidth: null,
+      recommendedHeight: null,
+      rotation: 0,
+    });
+  }, []);
+
+  const openVariantAssetEditor = useCallback(
+    (variant, colorCode = "") => {
+      if (!selectedPhoto || !selectedPhotoId) {
+        setVariantMessage({
+          success: null,
+          error: "Selecciona una fotografía antes de editar el asset.",
+        });
+        return;
+      }
+
+      const normalizedCode = colorCode ? String(colorCode).toUpperCase() : "";
+      const colorOption = normalizedCode
+        ? variant.colorOptions?.find((option) => option.code === normalizedCode)
+        : null;
+
+      const catalogPrintPixels =
+        variant.catalogProduct?.printAreaPixels ||
+        (() => {
+          const catalogId = variant.catalogProduct?.id || variant.catalogProduct?._id;
+          if (!catalogId) return null;
+          const matched = catalogProducts.find((product) => product._id === catalogId);
+          return matched?.printAreaPixels || null;
+        })() || {};
+
+      setAssetEditor({
+        open: true,
+        variantId: variant.id,
+        colorCode: normalizedCode,
+        variantName: variant.displayName || variant.catalogProduct?.name || "Variante",
+        colorName: colorOption?.name || normalizedCode,
+        existingAsset: colorOption?.assetDetails || variant.assetDetails || null,
+        imageSrc: selectedPhoto.imagePath?.startsWith("http")
+          ? selectedPhoto.imagePath
+          : `${backendBase}${selectedPhoto.imagePath}`,
+        recommendedWidth: catalogPrintPixels.width || null,
+        recommendedHeight: catalogPrintPixels.height || null,
+        rotation: 0,
+      });
+    },
+    [backendBase, catalogProducts, selectedPhoto, selectedPhotoId]
+  );
+
+  const handleAssetEditorConfirm = useCallback(
+    async (variantId, colorCode, { blob, width, height }) => {
+      if (!selectedPhotoId) {
+        setVariantMessage({
+          success: null,
+          error: "Selecciona una fotografía antes de guardar el asset.",
+        });
+        return;
+      }
+
+      try {
+        setAssetUploading(true);
+        const formData = new FormData();
+        formData.append("asset", blob, `asset-${Date.now()}.jpg`);
+        if (colorCode) {
+          formData.append("colorCode", colorCode);
+        }
+
+        const { data } = await api.post(
+          `/prodigi/admin/photos/${selectedPhotoId}/variants/${variantId}/asset`,
+          formData
+        );
+
+        setVariantsByPhoto((prev) => {
+          const current = prev[selectedPhotoId] || [];
+          const hasVariant = current.some((variant) => variant.id === data.id);
+          const updated = hasVariant
+            ? current.map((variant) => (variant.id === data.id ? data : variant))
+            : [...current, data];
+          return {
+            ...prev,
+            [selectedPhotoId]: updated,
+          };
+        });
+
+        if (variantEditingId === data.id) {
+          loadVariantIntoForm(data);
+        }
+
+        setVariantMessage({
+          success: "Asset actualizado correctamente",
+          error: null,
+        });
+        closeAssetEditor();
+      } catch (err) {
+        const message =
+          err.response?.data?.error || "No se pudo actualizar el asset";
+        setVariantMessage({ success: null, error: message });
+      } finally {
+        setAssetUploading(false);
+      }
+    },
+    [closeAssetEditor, loadVariantIntoForm, selectedPhotoId, variantEditingId]
+  );
+
   const variantMockupSource = (mockup) =>
     mockup.url?.startsWith("http") ? mockup.url : `${import.meta.env.VITE_URL_BACKEND}${mockup.url}`;
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-12 px-4 py-10 text-white">
+      <VariantAssetEditor
+        open={assetEditor.open}
+        imageSrc={assetEditor.imageSrc}
+        variantName={assetEditor.variantName}
+        colorName={assetEditor.colorName}
+        existingAsset={assetEditor.existingAsset}
+        recommendedWidth={assetEditor.recommendedWidth}
+        recommendedHeight={assetEditor.recommendedHeight}
+        initialRotation={assetEditor.rotation}
+        loading={assetUploading}
+        onClose={closeAssetEditor}
+        onConfirm={(payload) =>
+          handleAssetEditorConfirm(
+            assetEditor.variantId,
+            assetEditor.colorCode,
+            payload
+          )
+        }
+      />
       <header className="flex flex-col gap-2">
         <h1 className="text-4xl font-semibold uppercase tracking-[0.4em] sm:text-5xl">
           Content Management
@@ -799,9 +1163,12 @@ const ContentManagement = () => {
         <div className="grid gap-8 lg:grid-cols-[360px_1fr]">
           <form onSubmit={handleCatalogSubmit} className="flex flex-col gap-4">
             <div className="grid gap-4 sm:grid-cols-2">
-              <label className="flex flex-col gap-2">
-                <span className="text-xs uppercase tracking-widest text-white/60">SKU*</span>
+              <div className="flex flex-col gap-2">
+                <label className="text-xs uppercase tracking-widest text-white/60" htmlFor="catalog-sku">
+                  SKU*
+                </label>
                 <input
+                  id="catalog-sku"
                   name="sku"
                   value={catalogForm.sku}
                   onChange={handleCatalogFormChange}
@@ -809,7 +1176,15 @@ const ContentManagement = () => {
                   placeholder="GLOBAL-CAN-10X10"
                   required
                 />
-              </label>
+                <button
+                  type="button"
+                  onClick={handleCatalogFetch}
+                  disabled={catalogFetching}
+                  className="self-start rounded-full border border-white/30 px-4 py-2 text-[0.6rem] uppercase tracking-[0.3em] text-white transition hover:border-white/60 hover:text-white disabled:cursor-not-allowed disabled:border-white/10 disabled:text-white/40"
+                >
+                  {catalogFetching ? "Consultando..." : "Importar Prodigi"}
+                </button>
+              </div>
               <label className="flex flex-col gap-2">
                 <span className="text-xs uppercase tracking-widest text-white/60">Nombre*</span>
                 <input
@@ -872,6 +1247,128 @@ const ContentManagement = () => {
                 placeholder="Detalles del producto, materiales, acabados..."
               />
             </label>
+
+            {catalogForm.prodigiDescription && (
+              <label className="flex flex-col gap-2">
+                <span className="text-xs uppercase tracking-widest text-white/60">
+                  Descripción de Prodigi
+                </span>
+                <textarea
+                  value={catalogForm.prodigiDescription}
+                  readOnly
+                  rows={3}
+                  className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white/70"
+                />
+              </label>
+            )}
+
+            <div className="grid gap-4 sm:grid-cols-3">
+              <label className="flex flex-col gap-2">
+                <span className="text-xs uppercase tracking-widest text-white/60">
+                  Dimensión ancho
+                </span>
+                <input
+                  name="productWidth"
+                  value={catalogForm.productWidth}
+                  onChange={handleCatalogFormChange}
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
+                  placeholder="Ancho"
+                />
+              </label>
+              <label className="flex flex-col gap-2">
+                <span className="text-xs uppercase tracking-widest text-white/60">
+                  Dimensión alto
+                </span>
+                <input
+                  name="productHeight"
+                  value={catalogForm.productHeight}
+                  onChange={handleCatalogFormChange}
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
+                  placeholder="Alto"
+                />
+              </label>
+              <label className="flex flex-col gap-2">
+                <span className="text-xs uppercase tracking-widest text-white/60">
+                  Unidades
+                </span>
+                <input
+                  name="productUnits"
+                  value={catalogForm.productUnits}
+                  onChange={handleCatalogFormChange}
+                  className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
+                  placeholder="in, cm, mm..."
+                />
+              </label>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="flex flex-col gap-2">
+                <span className="text-xs uppercase tracking-widest text-white/60">
+                  Resolución horizontal (px)
+                </span>
+                <input
+                  name="printPixelsWidth"
+                  value={catalogForm.printPixelsWidth}
+                  onChange={handleCatalogFormChange}
+                  type="number"
+                  min="0"
+                  step="1"
+                  className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
+                  placeholder="0"
+                />
+              </label>
+              <label className="flex flex-col gap-2">
+                <span className="text-xs uppercase tracking-widest text-white/60">
+                  Resolución vertical (px)
+                </span>
+                <input
+                  name="printPixelsHeight"
+                  value={catalogForm.printPixelsHeight}
+                  onChange={handleCatalogFormChange}
+                  type="number"
+                  min="0"
+                  step="1"
+                  className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
+                  placeholder="0"
+                />
+              </label>
+            </div>
+
+            {catalogForm.shipsTo.length > 0 && (
+              <p className="text-[0.6rem] text-white/40">
+                Prodigi envía este producto a {catalogForm.shipsTo.length} países.
+              </p>
+            )}
+
+            {catalogForm.attributes &&
+              Object.keys(catalogForm.attributes).length > 0 && (
+                <div className="flex flex-col gap-2">
+                  <span className="text-xs uppercase tracking-widest text-white/60">
+                    Atributos Prodigi
+                  </span>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {Object.entries(catalogForm.attributes).map(([key, value]) => (
+                      <div
+                        key={key}
+                        className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-[0.6rem] text-white/70"
+                      >
+                        <p className="uppercase tracking-[0.3em] text-white/40">
+                          {key}
+                        </p>
+                        <p className="mt-1 break-words text-white/70">
+                          {Array.isArray(value) ? value.join(", ") : value}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
             <div className="flex flex-col gap-3">
               <div className="flex items-center justify-between">
@@ -979,6 +1476,11 @@ const ContentManagement = () => {
                   {product.description && (
                     <p className="text-sm text-white/70">{product.description}</p>
                   )}
+                  {product.prodigiDescription && (
+                    <p className="text-[0.65rem] text-white/40">
+                      {product.prodigiDescription}
+                    </p>
+                  )}
                   <div className="flex flex-wrap items-center gap-3 text-xs text-white/60">
                     {product.basePrice !== undefined && product.basePrice !== null && (
                       <span>
@@ -986,6 +1488,16 @@ const ContentManagement = () => {
                       </span>
                     )}
                     {product.defaultSizing && <span>Modo: {product.defaultSizing}</span>}
+                    {product.productDimensions?.width && product.productDimensions?.height && (
+                      <span>
+                        Dimensiones: {product.productDimensions.width} × {product.productDimensions.height} {product.productDimensions.units || ""}
+                      </span>
+                    )}
+                    {product.printAreaPixels?.width && product.printAreaPixels?.height && (
+                      <span>
+                        Resolución: {product.printAreaPixels.width} × {product.printAreaPixels.height} px
+                      </span>
+                    )}
                   </div>
                   {product.availableColors?.length ? (
                     <div className="flex flex-wrap gap-2 text-[0.6rem] text-white/50">
@@ -1435,31 +1947,98 @@ const ContentManagement = () => {
                       )}
                       {variant.sizing && <span>Modo: {variant.sizing}</span>}
                     </div>
+                    {variant.assetUrl ? (
+                      <div className="flex flex-col gap-2">
+                        <p className="text-[0.6rem] uppercase tracking-[0.3em] text-white/40">
+                          Asset principal
+                        </p>
+                        <img
+                          src={variant.assetUrl.startsWith("http") ? variant.assetUrl : `${backendBase}${variant.assetUrl}`}
+                          alt="Asset principal"
+                          className="h-24 w-32 rounded-xl border border-white/10 object-cover"
+                        />
+                        {variant.assetDetails?.width && variant.assetDetails?.height && (
+                          <p className="text-[0.6rem] text-white/40">
+                            {variant.assetDetails.width} × {variant.assetDetails.height} px · {variant.assetDetails.format?.toUpperCase() || ""}
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-[0.6rem] text-white/40">
+                        Aún no has generado un asset específico para esta variante.
+                      </p>
+                    )}
                     {variant.mockupImages?.length ? (
-                      <div className="flex gap-2 overflow-x-auto">
-                        {variant.mockupImages.map((image) => (
-                          <img
-                            key={image.id}
-                            src={variantMockupSource(image)}
-                            alt="Mockup"
-                            className="h-16 w-24 flex-none rounded-lg border border-white/10 object-cover"
-                          />
-                        ))}
+                      <div className="flex flex-col gap-2">
+                        <p className="text-[0.6rem] uppercase tracking-[0.3em] text-white/40">
+                          Mockups asociados
+                        </p>
+                        <div className="flex gap-2 overflow-x-auto">
+                          {variant.mockupImages.map((image) => (
+                            <img
+                              key={image.id}
+                              src={variantMockupSource(image)}
+                              alt="Mockup"
+                              className="h-16 w-24 flex-none rounded-lg border border-white/10 object-cover"
+                            />
+                          ))}
+                        </div>
                       </div>
                     ) : null}
                     {variant.colorOptions?.length ? (
-                      <div className="flex flex-wrap gap-2 text-[0.6rem] text-white/50">
-                        {variant.colorOptions.map((color) => (
-                          <span
-                            key={`${variant.id}-${color.code}`}
-                            className="rounded-full border border-white/20 px-3 py-1 uppercase tracking-[0.25em]"
-                          >
-                            {color.name || color.code}
-                          </span>
-                        ))}
+                      <div className="flex flex-col gap-2">
+                        <p className="text-[0.6rem] uppercase tracking-[0.3em] text-white/40">
+                          Colores configurados
+                        </p>
+                        <div className="flex flex-col gap-2">
+                          {variant.colorOptions.map((color) => (
+                            <div
+                              key={`${variant.id}-${color.code}`}
+                              className="flex flex-wrap items-center gap-3 rounded-xl border border-white/10 bg-white/10 px-3 py-2"
+                            >
+                              <span
+                                className="h-3 w-3 rounded-full border border-white/30"
+                                style={getColorSwatchStyle(color.code)}
+                              />
+                              <span className="text-[0.6rem] uppercase tracking-[0.25em] text-white/70">
+                                {color.name || color.code}
+                              </span>
+                              {color.assetUrl ? (
+                                <img
+                                  src={color.assetUrl.startsWith("http") ? color.assetUrl : `${backendBase}${color.assetUrl}`}
+                                  alt={`Asset ${color.name || color.code}`}
+                                  className="h-12 w-16 rounded-lg border border-white/10 object-cover"
+                                />
+                              ) : (
+                                <span className="text-[0.55rem] uppercase tracking-[0.3em] text-white/30">
+                                  Sin asset
+                                </span>
+                              )}
+                              {color.assetDetails?.width && color.assetDetails?.height && (
+                                <span className="text-[0.55rem] text-white/40">
+                                  {color.assetDetails.width} × {color.assetDetails.height} px
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => openVariantAssetEditor(variant, color.code)}
+                                className="ml-auto rounded-full border border-white/30 px-3 py-1 text-[0.55rem] uppercase tracking-[0.3em] text-white transition hover:border-white/60 hover:text-white"
+                              >
+                                Editar asset
+                              </button>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     ) : null}
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => openVariantAssetEditor(variant)}
+                        className="rounded-full border border-white/30 px-4 py-2 text-[0.6rem] font-semibold uppercase tracking-[0.3em] text-white transition hover:border-white/60 hover:text-white"
+                      >
+                        Editar asset principal
+                      </button>
                       <button
                         type="button"
                         onClick={() => loadVariantIntoForm(variant)}
@@ -1587,5 +2166,200 @@ const ContentManagement = () => {
     </div>
   );
 };
+
+function VariantAssetEditor({
+  open,
+  imageSrc,
+  variantName,
+  colorName,
+  existingAsset,
+  recommendedWidth,
+  recommendedHeight,
+  initialRotation = 0,
+  loading,
+  onClose,
+  onConfirm,
+}) {
+  const [crop, setCrop] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
+  const [croppedAreaPixels, setCroppedAreaPixels] = useState(null);
+  const [targetWidth, setTargetWidth] = useState(
+    Number(existingAsset?.width || recommendedWidth || 3000) || 3000
+  );
+  const [targetHeight, setTargetHeight] = useState(
+    Number(existingAsset?.height || recommendedHeight || 3000) || 3000
+  );
+  const [rotation, setRotation] = useState(initialRotation);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (open) {
+      setCrop({ x: 0, y: 0 });
+      setZoom(1);
+      setCroppedAreaPixels(null);
+      setError(null);
+      const widthDefault =
+        existingAsset?.width || recommendedWidth || 3000;
+      const heightDefault =
+        existingAsset?.height || recommendedHeight || 3000;
+      setTargetWidth(Number(widthDefault) || 3000);
+      setTargetHeight(Number(heightDefault) || 3000);
+      setRotation(initialRotation || 0);
+    }
+  }, [open, existingAsset, recommendedWidth, recommendedHeight, initialRotation]);
+
+  const handleCropComplete = useCallback((_, areaPixels) => {
+    setCroppedAreaPixels(areaPixels);
+  }, []);
+
+  const handleConfirm = async () => {
+    if (!croppedAreaPixels) {
+      setError("Selecciona un recorte válido antes de guardar");
+      return;
+    }
+
+    try {
+      const blob = await getCroppedBlob(
+        imageSrc,
+        croppedAreaPixels,
+        targetWidth,
+        targetHeight,
+        rotation
+      );
+      await onConfirm({ blob, width: targetWidth, height: targetHeight });
+    } catch (err) {
+      setError(err.message || "No se pudo generar el recorte");
+    }
+  };
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 px-4 py-6">
+      <div className="relative w-full max-w-4xl rounded-3xl bg-neutral-900 p-6 shadow-2xl">
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute right-4 top-4 rounded-full border border-white/20 px-3 py-1 text-[0.6rem] uppercase tracking-[0.3em] text-white/60 transition hover:border-white/50 hover:text-white"
+        >
+          Cerrar
+        </button>
+        <header className="mb-4 space-y-1 pr-16">
+          <h3 className="text-lg font-semibold uppercase tracking-[0.3em] text-white">
+            Recortar asset
+          </h3>
+          <p className="text-xs text-white/60">
+            {variantName}
+            {colorName ? ` · ${colorName}` : ""}
+          </p>
+        </header>
+        <div className="relative h-[55vh] overflow-hidden rounded-2xl bg-black">
+          <Cropper
+            image={imageSrc}
+            crop={crop}
+            zoom={zoom}
+            rotation={rotation}
+            aspect={
+              targetWidth && targetHeight
+                ? Math.max(targetWidth, 1) / Math.max(targetHeight, 1)
+                : 1
+            }
+            onCropChange={setCrop}
+            onZoomChange={setZoom}
+            onRotationChange={setRotation}
+            onCropComplete={handleCropComplete}
+            objectFit="contain"
+            zoomWithScroll
+          />
+        </div>
+        <div className="mt-4 flex flex-col gap-3">
+          <label className="flex flex-col gap-1 text-xs uppercase tracking-[0.3em] text-white/60">
+            Zoom
+            <input
+              type="range"
+              min="1"
+              max="5"
+              step="0.01"
+              value={zoom}
+              onChange={(event) => setZoom(Number(event.target.value))}
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs uppercase tracking-[0.3em] text-white/60">
+            Rotación ({Math.round(rotation)}°)
+            <input
+              type="range"
+              min="-180"
+              max="180"
+              step="1"
+              value={rotation}
+              onChange={(event) => setRotation(Number(event.target.value))}
+            />
+          </label>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="flex flex-col gap-1 text-xs uppercase tracking-[0.3em] text-white/60">
+              Ancho final (px)
+              <input
+                type="number"
+                min={1}
+                value={targetWidth}
+                onChange={(event) =>
+                  setTargetWidth(Math.max(1, Number(event.target.value)))
+                }
+                className="rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-xs text-white focus:border-white/40 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs uppercase tracking-[0.3em] text-white/60">
+              Alto final (px)
+              <input
+                type="number"
+                min={1}
+                value={targetHeight}
+                onChange={(event) =>
+                  setTargetHeight(Math.max(1, Number(event.target.value)))
+                }
+                className="rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-xs text-white focus:border-white/40 focus:outline-none"
+              />
+            </label>
+          </div>
+          {recommendedWidth && recommendedHeight && (
+            <p className="text-[0.65rem] text-white/40">
+              Resolución recomendada Prodigi: {recommendedWidth} × {recommendedHeight} px
+            </p>
+          )}
+          {existingAsset ? (
+            <p className="text-[0.65rem] text-white/40">
+              Asset actual: {existingAsset.width || "?"} × {existingAsset.height || "?"} px ·
+              {" "}
+              {existingAsset.format?.toUpperCase() || ""}
+            </p>
+          ) : (
+            <p className="text-[0.65rem] text-white/40">
+              Define un recorte con las dimensiones recomendadas por Prodigi para este SKU.
+            </p>
+          )}
+          {error && <p className="text-xs text-red-300">{error}</p>}
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-full border border-white/30 px-4 py-2 text-[0.6rem] uppercase tracking-[0.3em] text-white transition hover:border-white/60 hover:text-white"
+              disabled={loading}
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={handleConfirm}
+              className="rounded-full bg-white px-4 py-2 text-[0.6rem] font-semibold uppercase tracking-[0.3em] text-black transition hover:bg-white/80 disabled:cursor-not-allowed disabled:bg-white/40"
+              disabled={loading}
+            >
+              {loading ? "Guardando..." : "Guardar recorte"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default ContentManagement;

@@ -18,51 +18,61 @@ export const AuthProvider = ({ children }) => {
 
 
     const fetchProfile = async () => {
+        console.log("[Auth] fetchProfile: start");
         setIsLoading(true); 
         try {
             const response = await api.get("/user/profile");
-            console.log("perfil");
-            console.log(response.data);
+            console.log("[Auth] fetchProfile: success", response.data);
             setProfile(response.data); // Actualiza el perfil en el contexto
         } catch (err) {
-            console.error("Error fetching profile:", err);
+            console.error("[Auth] fetchProfile: error", err);
             //logout();
         } finally {
+            console.log("[Auth] fetchProfile: end (setIsLoading false)");
             setIsLoading(false);
         }
     };
 
     const checkAuth = async () => {
+        console.log("[Auth] checkAuth: start");
         setIsLoading(true);
         const savedToken = localStorage.getItem("authToken");
+        console.log("[Auth] checkAuth: savedToken", savedToken ? "found" : "missing");
         if (savedToken) {
             setToken(savedToken);
             api.defaults.headers.common['Authorization'] = `Bearer ${savedToken}`; 
             setIsAuthenticated(true);
+            console.log("[Auth] checkAuth: token applied, fetching profile");
             await fetchProfile();
         } else {
+            console.log("[Auth] checkAuth: no token, cleaning state");
             setIsAuthenticated(false);
             setProfile(null);
             delete api.defaults.headers.common['Authorization'];
         }
+        console.log("[Auth] checkAuth: end (setIsLoading false)");
         setIsLoading(false);
     };
 
     const login = async (newToken) => {
+        console.log("[Auth] login: start", { hasToken: Boolean(newToken) });
         setIsLoading(true);
         localStorage.setItem("authToken", newToken);
         setToken(newToken);
         api.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
         setIsAuthenticated(true);
+        console.log("[Auth] login: token stored, fetching profile");
         await fetchProfile();
     };
     // Función para refrescar el perfil
     const refreshProfile = async () => {
         if (isAuthenticated) { 
+            console.log("[Auth] refreshProfile: auth true -> fetching profile");
             await fetchProfile();
         } 
     };
     const logout = async () => {
+        console.log("[Auth] logout: start");
         setIsLoading(true);
         localStorage.removeItem("authToken");
         setToken(null);
@@ -72,9 +82,10 @@ export const AuthProvider = ({ children }) => {
         try {
             await axios.post(`${import.meta.env.VITE_URL_BACKEND}/api/auth/logout/`, {}, { withCredentials: true });
         } catch (error) {
-            console.error("Logout API call failed:", error);
+            console.error("[Auth] logout: API call failed", error);
         }
         navigate("/signin"); // Redirigir a la página de login
+        console.log("[Auth] logout: redirect to /signin");
         setIsLoading(false);
     };
     
@@ -93,6 +104,7 @@ export const AuthProvider = ({ children }) => {
     };
 
     useEffect(() => {
+        console.log("[Auth] useEffect init: calling checkAuth");
         checkAuth(); // Verifica la autenticación al cargar la app
         setLogout(logout);
     // eslint-disable-next-line react-hooks/exhaustive-deps

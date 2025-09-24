@@ -27,6 +27,12 @@ const colorOptionSchema = new mongoose.Schema(
       type: [mongoose.Schema.Types.ObjectId],
       default: [],
     },
+    assetDetails: {
+      width: { type: Number },
+      height: { type: Number },
+      size: { type: Number },
+      format: { type: String },
+    },
   },
   { _id: false }
 );
@@ -69,6 +75,12 @@ const photoProdigiVariantSchema = new mongoose.Schema(
     },
     assetUrl: {
       type: String,
+    },
+    assetDetails: {
+      width: { type: Number },
+      height: { type: Number },
+      size: { type: Number },
+      format: { type: String },
     },
     mockupImages: {
       type: [mockupImageSchema],
