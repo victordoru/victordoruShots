@@ -16,6 +16,10 @@ const api = axios.create({
     withCredentials: true, // Permitir cookies HTTP-only
 });
 
+if (import.meta.env.DEV) {
+    console.log("[API] axios baseURL:", `${import.meta.env.VITE_URL_BACKEND}/api`);
+}
+
 // Estado para rastrear si el token ya está siendo renovado
 let isRefreshing = false;
 let refreshSubscribers = [];

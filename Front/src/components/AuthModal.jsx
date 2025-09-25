@@ -3,44 +3,13 @@ import PropTypes from 'prop-types';
 import { ArrowLeftIcon } from "@heroicons/react/24/outline";
 import SignIn from "@/pages/auth/SignIn";
 import SignUp from "@/pages/auth/SignUp";
-import EmailConfirmationModal from "@/components/EmailConfirmationModal";
 
 const AuthModal = ({ onClose, redirectTo = null, isOpen }) => {
   const [activeTab, setActiveTab] = useState("signup");
-  const [showEmailConfirmationCodeModal, setShowEmailConfirmationCodeModal] = useState(false);
-  const [emailForCodeVerification, setEmailForCodeVerification] = useState("");
 
   const handleCloseAllModals = () => {
-    setShowEmailConfirmationCodeModal(false);
-    onClose(); // Call original onClose for AuthModal
+    onClose();
   };
-
-  const handleCodeVerificationRequired = (email) => {
-    setEmailForCodeVerification(email);
-    setShowEmailConfirmationCodeModal(true);
-    // Cierra el AuthModal principal (pestañas) cuando se requiere verificación de código
-    // pero mantiene el overlay para EmailConfirmationModal al no establecer isOpen como false aquí.
-    // El componente padre (que controla isOpen para AuthModal) podría seguir pensando que AuthModal está abierto.
-    // Esto será manejado por la lógica de renderizado a continuación.
-    if (isOpen) { // Si AuthModal estaba abierto, llama a su onClose para ocultar la interfaz de pestañas
-        onClose(); // Esto debería ocultar la parte de AuthModal
-    }
-  };
-
-  // If only the EmailConfirmationModal should be visible
-  if (showEmailConfirmationCodeModal) {
-    return (
-      <EmailConfirmationModal
-        isOpen={true} // It's definitely open if we are in this block
-        onClose={() => {
-          setShowEmailConfirmationCodeModal(false);
-          // After closing the code modal, we don't automatically re-open AuthModal.
-          // The user would need to trigger AuthModal again if needed.
-        }}
-        email={emailForCodeVerification}
-      />
-    );
-  }
 
   // If AuthModal itself is not supposed to be open, and code modal isn't either, render nothing.
   if (!isOpen) return null;
@@ -95,15 +64,13 @@ const AuthModal = ({ onClose, redirectTo = null, isOpen }) => {
             <SignIn 
               redirectTo={redirectTo} 
               onClose={handleCloseAllModals} // If sign-in is successful from here, close all modals
-              isModal={true} 
-              onCodeVerificationRequired={handleCodeVerificationRequired}
+              isModal={true}
             />
           ) : (
             <SignUp 
               redirectTo={redirectTo} 
               onClose={handleCloseAllModals} // If sign-up (non-code path) is successful, close all modals
-              isModal={true} 
-              onCodeVerificationRequired={handleCodeVerificationRequired}
+              isModal={true}
             />
           )}
         </div>

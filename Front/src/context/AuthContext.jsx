@@ -109,7 +109,7 @@ export const AuthProvider = ({ children }) => {
         setLogout(logout);
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
-    const isEmailConfirmed = profile?.mail_confirmed || false;
+    const isEmailConfirmed = profile?.mail_confirmed ?? true;
 
     return (
         <AuthContext.Provider value={{ 

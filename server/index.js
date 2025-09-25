@@ -6,12 +6,18 @@ require("dotenv").config({ path: path.join(__dirname, ".env") });
 const {connectDB} = require("./config/db");
 const cookieParser = require("cookie-parser");
 const stripeWebhookRouter = require("./routes/stripeWebhook");
+const { logStartupDiagnostics, buildHealthReport } = require("./utils/diagnostics");
 
 const app = express();
 const PORT = process.env.PORT || 5001;
 
+logStartupDiagnostics();
+
 // Conectar a MongoDB
-connectDB();
+connectDB().catch((err) => {
+    console.error("[DB] Unable to establish initial connection", err.message);
+    process.exit(1);
+});
 
 // Middlewares
 app.use(cors({
@@ -26,8 +32,26 @@ app.use("/api/payments/webhook", stripeWebhookRouter);
 app.use(bodyParser.json());
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-app.get('/health', (req, res) => {
-    res.status(200).json({ status: 'ok', timestamp: Date.now() });
+app.get('/health', async (req, res) => {
+    try {
+        const report = await buildHealthReport();
+        const statusCode = report.status === 'ok' ? 200 : 503;
+        res.status(statusCode).json({ status: report.status, timestamp: report.timestamp });
+    } catch (error) {
+        console.error('[Health] Error building health report', error.message);
+        res.status(500).json({ status: 'error', message: error.message });
+    }
+});
+
+app.get('/health/full', async (req, res) => {
+    try {
+        const report = await buildHealthReport();
+        const statusCode = report.status === 'ok' ? 200 : 503;
+        res.status(statusCode).json(report);
+    } catch (error) {
+        console.error('[Health] Error building detailed health report', error.message);
+        res.status(500).json({ status: 'error', message: error.message });
+    }
 });
 
 // Rutas básicas

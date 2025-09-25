@@ -35,3 +35,4 @@ PRODIGI_DEFAULT_SHIPPING_METHOD=Budget
 
 # Environment
 NODE_ENV=development
+EMAIL_ENABLED=false

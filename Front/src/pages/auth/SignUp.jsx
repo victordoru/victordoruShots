@@ -15,8 +15,7 @@ export const metadata = {
 export default function SignUp({ 
   redirectTo = null, 
   onClose = () => {}, 
-  isModal = false, 
-  onCodeVerificationRequired = () => {} 
+  isModal = false
 }) {
   // Estado para manejar los datos del formulario
   const [formData, setFormData] = useState({
@@ -24,7 +23,6 @@ export default function SignUp({
     email: "",
     password: "",
     confirmPassword: "",
-    redirectTo: redirectTo, // Guarda la ruta de redirección si existe
   });
 
   // Estados para manejar la UI y validaciones
@@ -100,26 +98,21 @@ export default function SignUp({
 
     try {
       // Prepara el payload para el backend
-      const payload = { ...formData };
-      if (isModal) {
-        payload.signupMethod = 'modal_code';  // Añade flag especial para registro desde modal
-      }
+      const payload = {
+        name: formData.name,
+        email: formData.email,
+        password: formData.password,
+        redirectTo,
+      };
 
       // Envía la petición al backend
       const response = await axios.post(`${import.meta.env.VITE_URL_BACKEND}/api/auth/signup/user`, payload);
       
       if (response.status === 200) {
         // Manejo de respuesta exitosa
-        if (isModal && response.data.requiresVerification) {
-          // Flujo para modal: requiere verificación de código
+        if (response.data.accessToken) {
           await login(response.data.accessToken);
-          
-          setSuccess("¡Cuenta creada! Te hemos enviado un código a tu correo para verificar tu cuenta.");
-          onCodeVerificationRequired(response.data.email);
-        } else if (response.data.accessToken) {
-          // Flujo normal: login y redirección
-          await login(response.data.accessToken);
-          setSuccess("¡Cuenta creada! Revisa tu correo para confirmar tu cuenta.");
+          setSuccess("¡Cuenta creada! Tu sesión está activa.");
           setError(null);
           if (onClose && typeof onClose === 'function') onClose();
           if (redirectTo) navigate(redirectTo);
@@ -491,5 +484,4 @@ SignUp.propTypes = {
   redirectTo: PropTypes.string,
   onClose: PropTypes.func,
   isModal: PropTypes.bool,
-  onCodeVerificationRequired: PropTypes.func,
 };

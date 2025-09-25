@@ -16,8 +16,7 @@ export const metadata = {
 export default function SignIn({ 
   redirectTo = null, 
   onClose = () => {}, 
-  isModal = false, 
-  onCodeVerificationRequired = () => {} 
+  isModal = false 
 }) {
   const [form, setForm] = useState({ email: "", password: "", remember: false });
   const [error, setError] = useState(null);
@@ -38,11 +37,11 @@ export default function SignIn({
     e.preventDefault();
     setError(null);
     try {
-      const payload = { ...form };
-      if (isModal) {
-        payload.loginMethod = 'modal_code';
-      }
-      const response = await axios.post(`${import.meta.env.VITE_URL_BACKEND}/api/auth/login/user`, payload, { withCredentials: true });
+      const response = await axios.post(
+        `${import.meta.env.VITE_URL_BACKEND}/api/auth/login/user`,
+        form,
+        { withCredentials: true }
+      );
       
       // Successful login, email already confirmed
       await login(response.data.accessToken);
@@ -54,13 +53,7 @@ export default function SignIn({
       }
 
     } catch (err) {
-      if (isModal && err.response?.data?.requiresEmailVerification && err.response?.data?.verificationType === 'code') {
-        // Email not confirmed, and it's a modal login expecting code verification
-        setError(err.response.data.message); // Show message like "Email not confirmed. Please verify..."
-        onCodeVerificationRequired(err.response.data.email);
-      } else {
-        setError(err.response?.data?.message || "Login failed");
-      }
+      setError(err.response?.data?.message || "Login failed");
     }
   };
   const handleGoogleSuccess = async (credentialResponse) => {
@@ -269,5 +262,4 @@ SignIn.propTypes = {
   redirectTo: PropTypes.string,
   onClose: PropTypes.func,
   isModal: PropTypes.bool,
-  onCodeVerificationRequired: PropTypes.func,
 };

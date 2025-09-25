@@ -6,6 +6,8 @@ const User = require("../models/User");
 const router = express.Router();
 const { sendConfirmationEmail, sendVerificationCodeEmail, sendTemplateEmail } = require("../utils/emailService");
 
+const EMAILS_ENABLED = String(process.env.EMAIL_ENABLED || "false").toLowerCase() === "true";
+
 // Google OAuth
 const { OAuth2Client } = require("google-auth-library");
 
@@ -81,19 +83,26 @@ router.post("/signup/user", async (req, res) => {
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
-        const newUser = new User({ name, email, password: hashedPassword, mail_confirmed: false });
+        const newUser = new User({ 
+            name, 
+            email, 
+            password: hashedPassword, 
+            mail_confirmed: EMAILS_ENABLED ? false : true,
+        });
         await newUser.save();
 
-        if (signupMethod === 'modal_code') {
-            // Para el registro mediante modal, el frontend llamará a send-verification-code por separado
-            console.log(`Modal signup for ${email}, verification code to be sent by frontend call.`);
-        } else {
-            // Existing link-based confirmation
-            if (redirectTo) {
-                await sendConfirmationEmail(newUser, false, redirectTo);
+        if (EMAILS_ENABLED) {
+            if (signupMethod === 'modal_code') {
+                console.log(`[Auth] Modal signup for ${email}, waiting for verification code flow.`);
             } else {
-                await sendConfirmationEmail(newUser);
+                if (redirectTo) {
+                    await sendConfirmationEmail(newUser, false, redirectTo);
+                } else {
+                    await sendConfirmationEmail(newUser);
+                }
             }
+        } else {
+            console.log(`[Auth] Signup for ${email} completed without email confirmation (EMAIL_ENABLED=false).`);
         }
 
         const accessToken = jwt.sign(
@@ -129,6 +138,9 @@ router.post("/signup/user", async (req, res) => {
 
 // Confirmar el correo electrónico
 router.get("/confirm-email/user/:token", async (req, res) => {
+    if (!EMAILS_ENABLED) {
+        return res.status(404).json({ message: "Email confirmation is disabled" });
+    }
     const { token } = req.params;
     const { redirect } = req.query;
 
@@ -204,6 +216,9 @@ router.get("/confirm-email/user/:token", async (req, res) => {
 
 // Endpoint para enviar código de verificación por email
 router.post("/send-verification-code/user", async (req, res) => {
+    if (!EMAILS_ENABLED) {
+        return res.status(503).json({ message: "Email verification codes are disabled" });
+    }
     const { email } = req.body;
 
     try {
@@ -230,6 +245,9 @@ router.post("/send-verification-code/user", async (req, res) => {
 
 // Endpoint para verificar el código de email
 router.post("/verify-email-code/user", async (req, res) => {
+    if (!EMAILS_ENABLED) {
+        return res.status(503).json({ message: "Email verification is disabled" });
+    }
     const { email, code } = req.body;
 
     try {
@@ -281,6 +299,9 @@ router.post("/verify-email-code/user", async (req, res) => {
 
 // Enviar correo para restablecer contraseña
 router.post("/request-password-reset/user", async (req, res) => {
+    if (!EMAILS_ENABLED) {
+        return res.status(503).json({ message: "Password reset emails are disabled" });
+    }
     const { email } = req.body;
 
     try {
@@ -387,8 +408,10 @@ router.get("/validate-reset-token/user/:token", async (req, res) => {
 });
 
 router.post("/send-confirmation-email/user", async (req, res) => {
+    if (!EMAILS_ENABLED) {
+        return res.status(503).json({ message: "Email delivery is disabled" });
+    }
     const { email } = req.body;
-    console.log(email);
 
     try {
         const user = await User.findOne({ email });
@@ -418,7 +441,7 @@ router.post("/login/user", async (req, res) => {
             return res.status(401).json({ message: "Invalid credentials" });
         }
 
-        if (!user.mail_confirmed) {
+        if (EMAILS_ENABLED && !user.mail_confirmed) {
             if (loginMethod === 'modal_code') {
                 return res.status(403).json({ 
                     message: "Email not confirmed. Please verify your email using the code.",
@@ -426,9 +449,8 @@ router.post("/login/user", async (req, res) => {
                     verificationType: 'code',
                     email: user.email 
                 });
-            } else {
-                return res.status(403).json({ message: "Please confirm your email before logging in." });
             }
+            return res.status(403).json({ message: "Please confirm your email before logging in." });
         }
 
         // Email is confirmed, proceed with login
