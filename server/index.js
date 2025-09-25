@@ -5,6 +5,7 @@ const path = require("path");
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 const {connectDB} = require("./config/db");
 const cookieParser = require("cookie-parser");
+const stripeWebhookRouter = require("./routes/stripeWebhook");
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -21,6 +22,7 @@ app.use(cors({
 app.options("*", cors());
 
 app.use(cookieParser());
+app.use("/api/payments/webhook", stripeWebhookRouter);
 app.use(bodyParser.json());
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 

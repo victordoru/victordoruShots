@@ -18,9 +18,14 @@ SMTP_FROM=your-email@gmail.com
 # Google OAuth
 GOOGLE_CLIENT_ID=your-google-client-id
 
-# Stripe (keep for future use)
-STRIPE_PUBLISHABLE_KEY=pk_test_your_publishable_key
-STRIPE_SECRET_KEY=sk_test_your_secret_key
+# Stripe
+PK_TEST_STRIPE=pk_test_your_publishable_key
+SK_TEST_STRIPE=sk_test_your_secret_key
+# Optional: uncomment and set when switching to live mode
+# PK_LIVE_STRIPE=pk_live_your_publishable_key
+# SK_LIVE_STRIPE=sk_live_your_secret_key
+STRIPE_TEST_WEBHOOK_SECRET=whsec_test_your_webhook_secret
+# STRIPE_WEBHOOK_SECRET=whsec_live_your_webhook_secret
 
 # Prodigi Print API
 PRODIGI_API_KEY=your-prodigi-sandbox-api-key

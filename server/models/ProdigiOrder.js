@@ -76,6 +76,31 @@ const prodigiOrderSchema = new mongoose.Schema(
     prodigiOrderSnapshot: {
       type: mongoose.Schema.Types.Mixed,
     },
+    pricing: {
+      type: new mongoose.Schema(
+        {
+          currency: { type: String, trim: true, uppercase: true },
+          prodigiItemsAmount: { type: Number },
+          prodigiShippingAmount: { type: Number },
+          prodigiTaxAmount: { type: Number },
+          prodigiFeesAmount: { type: Number },
+          prodigiTotal: { type: Number },
+          platformMargin: { type: Number },
+          totalCharged: { type: Number },
+        },
+        { _id: false }
+      ),
+      default: undefined,
+    },
+    stripePaymentIntentId: {
+      type: String,
+      trim: true,
+      index: true,
+    },
+    stripePaymentStatus: {
+      type: String,
+      trim: true,
+    },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

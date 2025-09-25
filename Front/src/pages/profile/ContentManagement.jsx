@@ -36,6 +36,7 @@ const variantInitialState = {
   displayName: "",
   description: "",
   retailPrice: "",
+  profitMargin: "",
   currency: "EUR",
   sizing: "",
   assetUrl: "",
@@ -714,6 +715,10 @@ const ContentManagement = () => {
         variant.retailPrice !== undefined && variant.retailPrice !== null
           ? String(variant.retailPrice)
           : "",
+      profitMargin:
+        variant.profitMargin !== undefined && variant.profitMargin !== null
+          ? String(variant.profitMargin)
+          : "",
       currency: variant.currency || "EUR",
       sizing: variant.sizing || "",
       assetUrl: variant.assetUrl || "",
@@ -749,6 +754,7 @@ const ContentManagement = () => {
     formData.append("displayName", variantForm.displayName);
     formData.append("description", variantForm.description);
     formData.append("retailPrice", variantForm.retailPrice);
+    formData.append("profitMargin", variantForm.profitMargin);
     formData.append("currency", variantForm.currency);
     formData.append("sizing", variantForm.sizing);
     formData.append("assetUrl", variantForm.assetUrl);
@@ -1605,7 +1611,7 @@ const ContentManagement = () => {
                 </select>
               </label>
 
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-4 sm:grid-cols-3">
                 <label className="flex flex-col gap-2">
                   <span className="text-xs uppercase tracking-widest text-white/60">Nombre</span>
                   <input
@@ -1618,7 +1624,21 @@ const ContentManagement = () => {
                   />
                 </label>
                 <label className="flex flex-col gap-2">
-                  <span className="text-xs uppercase tracking-widest text-white/60">Precio</span>
+                  <span className="text-xs uppercase tracking-widest text-white/60">Margen (€)</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={variantForm.profitMargin}
+                    onChange={(event) =>
+                      handleVariantFieldChange("profitMargin", event.target.value)
+                    }
+                    placeholder="0.00"
+                    className="rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white placeholder:text-white/30 focus:border-white focus:outline-none"
+                  />
+                </label>
+                <label className="flex flex-col gap-2">
+                  <span className="text-xs uppercase tracking-widest text-white/60">Precio manual (opcional)</span>
                   <input
                     type="number"
                     min="0"
@@ -1943,6 +1963,11 @@ const ContentManagement = () => {
                       {variant.retailPrice !== undefined && variant.retailPrice !== null && (
                         <span>
                           Precio: {Number(variant.retailPrice).toFixed(2)} {variant.currency || "EUR"}
+                        </span>
+                      )}
+                      {variant.profitMargin !== undefined && variant.profitMargin !== null && (
+                        <span>
+                          Margen: {Number(variant.profitMargin).toFixed(2)} {variant.currency || "EUR"}
                         </span>
                       )}
                       {variant.sizing && <span>Modo: {variant.sizing}</span>}

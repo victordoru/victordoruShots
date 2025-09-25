@@ -86,6 +86,11 @@ const photoProdigiVariantSchema = new mongoose.Schema(
       type: [mockupImageSchema],
       default: [],
     },
+    profitMargin: {
+      type: Number,
+      min: 0,
+      default: 0,
+    },
     colorOptions: {
       type: [colorOptionSchema],
       default: [],

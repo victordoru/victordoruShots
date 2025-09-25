@@ -343,6 +343,48 @@ const buildAssetUrl = (imagePath) => {
   return `${base}${cleanedPath}`;
 };
 
+const summarizeProdigiQuote = (prodigiResponse) => {
+  const quotes = Array.isArray(prodigiResponse?.quotes)
+    ? prodigiResponse.quotes
+    : [];
+  if (!quotes.length) {
+    return null;
+  }
+
+  const primaryQuote = quotes[0];
+  const costSummary = primaryQuote?.costSummary || {};
+
+  const toNumber = (value) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
+  const itemsAmount = toNumber(costSummary.items?.amount);
+  const shippingAmount = toNumber(costSummary.shipping?.amount);
+  const taxAmount = toNumber(costSummary.tax?.amount);
+  const feesAmount = toNumber(costSummary.fees?.amount);
+
+  const currency =
+    costSummary.items?.currency ||
+    costSummary.shipping?.currency ||
+    costSummary.tax?.currency ||
+    costSummary.fees?.currency ||
+    primaryQuote?.currency ||
+    "EUR";
+
+  const prodigiTotal = itemsAmount + shippingAmount + taxAmount + feesAmount;
+
+  return {
+    quoteId: primaryQuote?.id || primaryQuote?.quoteId || null,
+    currency,
+    itemsAmount,
+    shippingAmount,
+    taxAmount,
+    feesAmount,
+    prodigiTotal,
+  };
+};
+
 const ensurePhotoAccessible = async (photoId) => {
   if (!mongoose.Types.ObjectId.isValid(photoId)) {
     return { error: { status: 400, message: "photoId inválido" } };
@@ -424,6 +466,10 @@ const buildVariantResponse = (variantDoc, { includeInactive = false } = {}) => {
     retailPrice:
       variant.retailPrice !== undefined ? variant.retailPrice : catalogProduct?.basePrice,
     currency: variant.currency || catalogProduct?.currency || "EUR",
+    profitMargin:
+      Number.isFinite(variant.profitMargin) && variant.profitMargin > 0
+        ? variant.profitMargin
+        : 0,
     sizing: variant.sizing || catalogProduct?.defaultSizing || null,
     assetUrl: variant.assetUrl || null,
     assetDetails: variant.assetDetails || null,
@@ -765,6 +811,7 @@ const createPhotoVariant = async (req, res) => {
       displayName,
       description,
       retailPrice,
+      profitMargin,
       currency,
       sizing,
       assetUrl,
@@ -796,6 +843,12 @@ const createPhotoVariant = async (req, res) => {
     if (retailPrice !== undefined && retailPrice !== "") {
       const value = Number(retailPrice);
       if (!Number.isNaN(value)) variant.retailPrice = value;
+    }
+    if (profitMargin !== undefined && profitMargin !== "") {
+      const value = Number(profitMargin);
+      if (!Number.isNaN(value) && value >= 0) {
+        variant.profitMargin = value;
+      }
     }
     variant.currency = currency ? String(currency).trim().toUpperCase() : variant.currency;
     variant.sizing = sizing ? String(sizing).trim() : undefined;
@@ -856,6 +909,7 @@ const updatePhotoVariant = async (req, res) => {
       displayName,
       description,
       retailPrice,
+      profitMargin,
       currency,
       sizing,
       assetUrl,
@@ -887,6 +941,16 @@ const updatePhotoVariant = async (req, res) => {
       } else {
         const value = Number(retailPrice);
         if (!Number.isNaN(value)) variant.retailPrice = value;
+      }
+    }
+    if (profitMargin !== undefined) {
+      if (profitMargin === "" || profitMargin === null) {
+        variant.profitMargin = 0;
+      } else {
+        const value = Number(profitMargin);
+        if (!Number.isNaN(value) && value >= 0) {
+          variant.profitMargin = value;
+        }
       }
     }
     if (currency !== undefined) {
@@ -1126,6 +1190,139 @@ const getCatalogProductDetailsPublic = async (req, res) => {
   }
 };
 
+const computeQuoteForVariant = async ({
+  photoId,
+  variantId,
+  colorCode,
+  copies,
+  destinationCountryCode,
+  shippingMethod,
+  productAttributes,
+  assetOverrideUrl,
+}) => {
+  const { photo, variant, selectedColor, error } = await loadVariantForPhoto({
+    photoId,
+    variantId,
+    colorCode,
+  });
+
+  if (error) {
+    const err = new Error(error.message);
+    err.status = error.status;
+    throw err;
+  }
+
+  const copiesToPrint = sanitizeInt(copies, 1);
+  const sku = variant.catalogProduct?.sku;
+
+  if (!sku) {
+    const err = new Error("El producto de catálogo no tiene un SKU configurado");
+    err.status = 500;
+    throw err;
+  }
+
+  const resolvedAssetUrl =
+    assetOverrideUrl ||
+    selectedColor?.assetUrl ||
+    variant.assetUrl ||
+    buildAssetUrl(photo.imagePath);
+
+  const assetsPayload = [
+    {
+      printArea: "default",
+    },
+  ];
+
+  if (resolvedAssetUrl && /^https?:\/\//i.test(resolvedAssetUrl)) {
+    assetsPayload[0].url = resolvedAssetUrl;
+  }
+
+  const attributesFromRequest =
+    productAttributes &&
+    typeof productAttributes === "object" &&
+    !Array.isArray(productAttributes)
+      ? productAttributes
+      : null;
+
+  const storedAttributes =
+    variant.catalogProduct?.attributes &&
+    typeof variant.catalogProduct.attributes === "object" &&
+    !Array.isArray(variant.catalogProduct.attributes)
+      ? variant.catalogProduct.attributes
+      : null;
+
+  let attributesForQuote = attributesFromRequest || storedAttributes;
+
+  if (!attributesForQuote) {
+    try {
+      const { normalizedSku: refreshedSku, product } = await fetchProdigiProduct(sku);
+      const summary = buildProdigiProductSummary(product, refreshedSku);
+      attributesForQuote =
+        (summary.variantAttributes && Object.keys(summary.variantAttributes).length
+          ? summary.variantAttributes
+          : null) || summary.attributes || {};
+      console.log("[Prodigi] Attributes refreshed from catalog", {
+        sku,
+        attributeKeys: Object.keys(attributesForQuote || {}),
+      });
+    } catch (productError) {
+      const status = productError.status || 500;
+      const err = new Error(
+        status === 404
+          ? "No se encontraron atributos para la cotización de este SKU."
+          : "No se pudieron obtener los atributos necesarios para cotizar."
+      );
+      err.status = status;
+      err.details = productError.data || productError.message;
+      throw err;
+    }
+  }
+
+  const itemPayload = {
+    sku,
+    copies: copiesToPrint,
+    attributes:
+      attributesForQuote && typeof attributesForQuote === "object"
+        ? attributesForQuote
+        : {},
+    assets: assetsPayload,
+  };
+
+  const normalizedDestination = (destinationCountryCode || "ES").toUpperCase();
+  const normalizedShippingMethod = shippingMethod || DEFAULT_SHIPPING_METHOD;
+
+  const quotePayload = {
+    shippingMethod: normalizedShippingMethod,
+    destinationCountryCode: normalizedDestination,
+    items: [itemPayload],
+  };
+
+  const prodigiResponse = await prodigiRequest("/Quotes", {
+    method: "POST",
+    body: quotePayload,
+  });
+
+  console.log("[Prodigi] Quote requested", {
+    sku,
+    copies: copiesToPrint,
+    destination: normalizedDestination,
+    shippingMethod: normalizedShippingMethod,
+    attributeKeys: Object.keys(itemPayload.attributes || {}),
+    hasAssetUrl: Boolean(itemPayload.assets?.[0]?.url),
+  });
+
+  return {
+    photo,
+    variant,
+    selectedColor,
+    sku,
+    copies: copiesToPrint,
+    assetUrl: resolvedAssetUrl,
+    quotePayload,
+    prodigiResponse,
+  };
+};
+
 const getQuote = async (req, res) => {
   if (!isProdigiConfigured) {
     return res.status(503).json({
@@ -1134,124 +1331,161 @@ const getQuote = async (req, res) => {
   }
 
   try {
-    const {
-      photoId,
-      variantId,
-      colorCode,
-      copies,
-      destinationCountryCode,
-      shippingMethod,
-      productAttributes,
-    } = req.body || {};
-
-    const { photo, variant, selectedColor, error } = await loadVariantForPhoto({
-      photoId,
-      variantId,
-      colorCode,
-    });
-
-    if (error) {
-      return res.status(error.status).json({ error: error.message });
-    }
-
-    const copiesToPrint = sanitizeInt(copies, 1);
-    const sku = variant.catalogProduct?.sku;
-
-    if (!sku) {
-      return res
-        .status(500)
-        .json({ error: "El producto de catálogo no tiene un SKU configurado" });
-    }
-
-    const resolvedAssetUrl =
-      selectedColor?.assetUrl ||
-      variant.assetUrl ||
-      buildAssetUrl(photo.imagePath);
-    const assetsPayload = [
-      {
-        printArea: "default",
-      },
-    ];
-
-    if (resolvedAssetUrl && /^https?:\/\//i.test(resolvedAssetUrl)) {
-      assetsPayload[0].url = resolvedAssetUrl;
-    }
-
-    const attributesFromRequest =
-      productAttributes &&
-      typeof productAttributes === "object" &&
-      !Array.isArray(productAttributes)
-        ? productAttributes
-        : null;
-
-    const storedAttributes =
-      variant.catalogProduct?.attributes &&
-      typeof variant.catalogProduct.attributes === "object" &&
-      !Array.isArray(variant.catalogProduct.attributes)
-        ? variant.catalogProduct.attributes
-        : null;
-
-    let attributesForQuote = attributesFromRequest || storedAttributes;
-
-    if (!attributesForQuote) {
-      try {
-        const { normalizedSku: refreshedSku, product } = await fetchProdigiProduct(sku);
-        const summary = buildProdigiProductSummary(product, refreshedSku);
-        attributesForQuote =
-          (summary.variantAttributes && Object.keys(summary.variantAttributes).length
-            ? summary.variantAttributes
-            : null) || summary.attributes || {};
-        console.log("[Prodigi] Attributes refreshed from catalog", {
-          sku,
-          attributeKeys: Object.keys(attributesForQuote || {}),
-        });
-      } catch (productError) {
-        const status = productError.status || 500;
-        return res.status(status).json({
-          error:
-            status === 404
-              ? "No se encontraron atributos para la cotización de este SKU."
-              : "No se pudieron obtener los atributos necesarios para cotizar.",
-          details: productError.data || productError.message,
-        });
-      }
-    }
-
-    const itemPayload = {
-      sku,
-      copies: copiesToPrint,
-      attributes:
-        attributesForQuote && typeof attributesForQuote === "object"
-          ? attributesForQuote
-          : {},
-      assets: assetsPayload,
+    const params = {
+      photoId: req.body?.photoId,
+      variantId: req.body?.variantId,
+      colorCode: req.body?.colorCode,
+      copies: req.body?.copies,
+      destinationCountryCode: req.body?.destinationCountryCode,
+      shippingMethod: req.body?.shippingMethod,
+      productAttributes: req.body?.productAttributes,
+      assetOverrideUrl: req.body?.assetUrl,
     };
 
-    const quotePayload = {
-      shippingMethod: shippingMethod || DEFAULT_SHIPPING_METHOD,
-      destinationCountryCode: (destinationCountryCode || "ES").toUpperCase(),
-      items: [itemPayload],
-    };
+    const quoteContext = await computeQuoteForVariant(params);
 
-    const prodigiResponse = await prodigiRequest("/Quotes", {
-      method: "POST",
-      body: quotePayload,
-    });
-    console.log("[Prodigi] Quote requested", {
-      sku,
-      copies: copiesToPrint,
-      destination: quotePayload.destinationCountryCode,
-      shippingMethod: quotePayload.shippingMethod,
-      attributeKeys: Object.keys(itemPayload.attributes || {}),
-      hasAssetUrl: Boolean(itemPayload.assets?.[0]?.url),
-    });
+    const summary = summarizeProdigiQuote(quoteContext.prodigiResponse);
+    const rawMargin = Number(quoteContext.variant.profitMargin || 0);
+    const marginAmount = Number.isFinite(rawMargin) && rawMargin > 0 ? rawMargin : 0;
+
+    const pricing = summary
+      ? {
+          currency: summary.currency,
+          prodigiItemsAmount: summary.itemsAmount,
+          prodigiShippingAmount: summary.shippingAmount,
+          prodigiTaxAmount: summary.taxAmount,
+          prodigiFeesAmount: summary.feesAmount,
+          prodigiTotal: summary.prodigiTotal,
+          platformMargin: marginAmount,
+          totalWithMargin: summary.prodigiTotal + marginAmount,
+        }
+      : null;
 
     res.status(200).json({
-      outcome: prodigiResponse?.outcome,
-      quotes: prodigiResponse?.quotes,
+      outcome: quoteContext.prodigiResponse?.outcome,
+      quotes: quoteContext.prodigiResponse?.quotes,
       variant: {
-        id: variant._id.toString(),
-        sku,
+        id: quoteContext.variant._id.toString(),
+        sku: quoteContext.sku,
+        currency:
+          quoteContext.variant.currency || pricing?.currency || "EUR",
+        profitMargin: marginAmount,
+      },
+      color: quoteContext.selectedColor
+        ? {
+            code: quoteContext.selectedColor.code,
+            name: quoteContext.selectedColor.name,
+          }
+        : null,
+      pricing,
+    });
+  } catch (error) {
+    console.error("Error getting Prodigi quote", error);
+    const status = error.status || 500;
+    res.status(status).json({
+      error: error.message || "No se pudo obtener la cotización de Prodigi",
+      details: error.details || error.data || error.message,
+    });
+  }
+};
+
+const placeProdigiOrder = async ({
+  photoId,
+  variantId,
+  colorCode,
+  copies,
+  recipient,
+  shippingMethod,
+  createdBy,
+  paymentIntentId,
+  paymentStatus,
+  pricing,
+  merchantReference: providedMerchantReference,
+}) => {
+  if (!isProdigiConfigured) {
+    const err = new Error("La integración con Prodigi no está configurada todavía.");
+    err.status = 503;
+    throw err;
+  }
+
+  const { photo, variant, selectedColor, error } = await loadVariantForPhoto({
+    photoId,
+    variantId,
+    colorCode,
+  });
+
+  if (error) {
+    const err = new Error(error.message);
+    err.status = error.status;
+    throw err;
+  }
+
+  if (!variant.catalogProduct?.sku) {
+    const err = new Error("El producto de catálogo no tiene un SKU configurado");
+    err.status = 500;
+    throw err;
+  }
+
+  const assetUrl =
+    selectedColor?.assetUrl ||
+    variant.assetUrl ||
+    buildAssetUrl(photo.imagePath);
+
+  if (!assetUrl) {
+    const err = new Error(
+      "No hay un assetUrl disponible para esta variante. Configura uno en Content Management."
+    );
+    err.status = 400;
+    throw err;
+  }
+
+  let normalizedRecipient;
+  try {
+    normalizedRecipient = normalizeRecipient(recipient);
+  } catch (recipientError) {
+    const err = new Error(recipientError.message);
+    err.status = recipientError.status || 400;
+    throw err;
+  }
+
+  const copiesToPrint = sanitizeInt(copies, 1);
+  const merchantReference =
+    providedMerchantReference || `photo-${photo._id}-${randomUUID()}`;
+
+  const orderPayload = {
+    merchantReference,
+    shippingMethod: shippingMethod || DEFAULT_SHIPPING_METHOD,
+    recipient: normalizedRecipient,
+    items: [
+      {
+        merchantReference: `item-${merchantReference}`,
+        sku: variant.catalogProduct.sku,
+        copies: copiesToPrint,
+        sizing:
+          variant.sizing || variant.catalogProduct?.defaultSizing || "fillPrintArea",
+        assets: [
+          {
+            printArea: "default",
+            url: assetUrl,
+          },
+        ],
+        metadata: {
+          variantId: String(variant._id),
+          variantName: variant.displayName || variant.catalogProduct.name,
+          colorCode: selectedColor?.code || null,
+        },
+      },
+    ],
+    metadata: {
+      application: "Photography-web",
+      photo: {
+        id: String(photo._id),
+        title: photo.title,
+      },
+      variant: {
+        id: String(variant._id),
+        sku: variant.catalogProduct.sku,
+        name: variant.displayName || variant.catalogProduct.name,
       },
       color: selectedColor
         ? {
@@ -1259,24 +1493,69 @@ const getQuote = async (req, res) => {
             name: selectedColor.name,
           }
         : null,
-    });
-  } catch (error) {
-    console.error("Error getting Prodigi quote", error);
-    const status = error.status || 500;
-    res.status(status).json({
-      error: "No se pudo obtener la cotización de Prodigi",
-      details: error.data || error.message,
-    });
+    },
+  };
+
+  const prodigiResponse = await prodigiRequest("/Orders", {
+    method: "POST",
+    body: orderPayload,
+  });
+
+  const prodigiOrderData = prodigiResponse?.order || null;
+  const prodigiOrderId = prodigiOrderData?.id || prodigiOrderData?.orderId;
+
+  if (!prodigiOrderId) {
+    console.warn(
+      "[Prodigi] Order response did not include an id",
+      prodigiResponse
+    );
   }
+
+  let storedOrder = null;
+  try {
+    storedOrder = await ProdigiOrder.create({
+      merchantReference,
+      prodigiOrderId: prodigiOrderId || merchantReference,
+      outcome: prodigiResponse?.outcome || null,
+      prodigiStatus: prodigiOrderData?.status || null,
+      photo: photo._id,
+      variant: variant._id,
+      sku: variant.catalogProduct.sku,
+      colorCode: selectedColor?.code || null,
+      copies: copiesToPrint,
+      shippingMethod: orderPayload.shippingMethod,
+      recipient: normalizedRecipient,
+      metadata: orderPayload.metadata,
+      prodigiOrderSnapshot: prodigiOrderData,
+      createdBy: createdBy || null,
+      pricing: pricing
+        ? {
+            currency: pricing.currency || variant.currency || "EUR",
+            prodigiItemsAmount: pricing.prodigiItemsAmount || null,
+            prodigiShippingAmount: pricing.prodigiShippingAmount || null,
+            prodigiTaxAmount: pricing.prodigiTaxAmount || null,
+            prodigiFeesAmount: pricing.prodigiFeesAmount || null,
+            prodigiTotal: pricing.prodigiTotal || null,
+            platformMargin: pricing.platformMargin || 0,
+            totalCharged: pricing.totalCharged || null,
+          }
+        : undefined,
+      stripePaymentIntentId: paymentIntentId || null,
+      stripePaymentStatus: paymentStatus || null,
+    });
+  } catch (persistenceError) {
+    console.error("Error storing Prodigi order in database", persistenceError);
+  }
+
+  return {
+    prodigiResponse,
+    prodigiOrder: prodigiOrderData,
+    storedOrder,
+    merchantReference,
+  };
 };
 
 const createOrder = async (req, res) => {
-  if (!isProdigiConfigured) {
-    return res.status(503).json({
-      error: "La integración con Prodigi no está configurada todavía.",
-    });
-  }
-
   try {
     const {
       photoId,
@@ -1287,130 +1566,55 @@ const createOrder = async (req, res) => {
       shippingMethod,
     } = req.body || {};
 
-    const { photo, variant, selectedColor, error } = await loadVariantForPhoto({
+    const quoteContext = await computeQuoteForVariant({
       photoId,
       variantId,
       colorCode,
+      copies,
+      destinationCountryCode: recipient?.countryCode,
+      shippingMethod,
+    }).catch((error) => {
+      const err = new Error(error.message || "No se pudo preparar la orden");
+      err.status = error.status || 400;
+      err.details = error.details;
+      throw err;
     });
 
-    if (error) {
-      return res.status(error.status).json({ error: error.message });
-    }
+    const summary = summarizeProdigiQuote(quoteContext.prodigiResponse);
+    const rawMargin = Number(quoteContext.variant.profitMargin || 0);
+    const marginAmount = Number.isFinite(rawMargin) && rawMargin > 0 ? rawMargin : 0;
 
-    if (!variant.catalogProduct?.sku) {
-      return res
-        .status(500)
-        .json({ error: "El producto de catálogo no tiene un SKU configurado" });
-    }
+    const pricing = summary
+      ? {
+          currency: summary.currency,
+          prodigiItemsAmount: summary.itemsAmount,
+          prodigiShippingAmount: summary.shippingAmount,
+          prodigiTaxAmount: summary.taxAmount,
+          prodigiFeesAmount: summary.feesAmount,
+          prodigiTotal: summary.prodigiTotal,
+          platformMargin: marginAmount,
+          totalCharged: summary.prodigiTotal + marginAmount,
+        }
+      : undefined;
 
-    const assetUrl =
-      selectedColor?.assetUrl ||
-      variant.assetUrl ||
-      buildAssetUrl(photo.imagePath);
-
-    if (!assetUrl) {
-      return res.status(400).json({
-        error:
-          "No hay un assetUrl disponible para esta variante. Configura uno en Content Management.",
-      });
-    }
-
-    let normalizedRecipient;
-    try {
-      normalizedRecipient = normalizeRecipient(recipient);
-    } catch (recipientError) {
-      const status = recipientError.status || 500;
-      return res.status(status).json({ error: recipientError.message });
-    }
-
-    const copiesToPrint = sanitizeInt(copies, 1);
-    const merchantReference = `photo-${photo._id}-${randomUUID()}`;
-
-    const orderPayload = {
-      merchantReference,
-      shippingMethod: shippingMethod || DEFAULT_SHIPPING_METHOD,
-      recipient: normalizedRecipient,
-      items: [
-        {
-          merchantReference: `item-${merchantReference}`,
-          sku: variant.catalogProduct.sku,
-          copies: copiesToPrint,
-          sizing:
-            variant.sizing || variant.catalogProduct?.defaultSizing || "fillPrintArea",
-          assets: [
-            {
-              printArea: "default",
-              url: assetUrl,
-            },
-          ],
-          metadata: {
-            variantId: String(variant._id),
-            variantName: variant.displayName || variant.catalogProduct.name,
-            colorCode: selectedColor?.code || null,
-          },
-        },
-      ],
-      metadata: {
-        application: "Photography-web",
-        photo: {
-          id: String(photo._id),
-          title: photo.title,
-        },
-        variant: {
-          id: String(variant._id),
-          sku: variant.catalogProduct.sku,
-          name: variant.displayName || variant.catalogProduct.name,
-        },
-        color: selectedColor
-          ? {
-              code: selectedColor.code,
-              name: selectedColor.name,
-            }
-          : null,
-      },
-    };
-
-    const prodigiResponse = await prodigiRequest("/Orders", {
-      method: "POST",
-      body: orderPayload,
+    const result = await placeProdigiOrder({
+      photoId,
+      variantId,
+      colorCode,
+      copies,
+      recipient,
+      shippingMethod,
+      createdBy: req.user?.userId,
+      pricing,
     });
-
-    const prodigiOrderData = prodigiResponse?.order || null;
-    const prodigiOrderId = prodigiOrderData?.id || prodigiOrderData?.orderId;
-
-    if (!prodigiOrderId) {
-      console.warn("Prodigi order response did not include an id", prodigiResponse);
-    }
-
-    let storedOrder = null;
-    try {
-      storedOrder = await ProdigiOrder.create({
-        merchantReference,
-        prodigiOrderId: prodigiOrderId || merchantReference,
-        outcome: prodigiResponse?.outcome || null,
-        prodigiStatus: prodigiOrderData?.status || null,
-        photo: photo._id,
-        variant: variant._id,
-        sku: variant.catalogProduct.sku,
-        colorCode: selectedColor?.code || null,
-        copies: copiesToPrint,
-        shippingMethod: orderPayload.shippingMethod,
-        recipient: normalizedRecipient,
-        metadata: orderPayload.metadata,
-        prodigiOrderSnapshot: prodigiOrderData,
-        createdBy: req.user?._id || null,
-      });
-    } catch (persistenceError) {
-      console.error("Error storing Prodigi order in database", persistenceError);
-    }
 
     res.status(201).json({
-      outcome: prodigiResponse?.outcome,
-      order: prodigiOrderData,
-      record: storedOrder
+      outcome: result.prodigiResponse?.outcome,
+      order: result.prodigiOrder,
+      record: result.storedOrder
         ? {
-            id: storedOrder._id,
-            prodigiOrderId: storedOrder.prodigiOrderId,
+            id: result.storedOrder._id,
+            prodigiOrderId: result.storedOrder.prodigiOrderId,
           }
         : null,
     });
@@ -1754,6 +1958,10 @@ module.exports = {
   listProducts,
   getQuote,
   createOrder,
+  computeQuoteForVariant,
+  placeProdigiOrder,
+  summarizeProdigiQuote,
+  normalizeRecipient,
   listCatalogProducts,
   fetchCatalogProductDetails,
   getCatalogProductDetailsPublic,

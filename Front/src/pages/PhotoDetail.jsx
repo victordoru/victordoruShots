@@ -1,6 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import api from "@/utils/axiosInstance";
+import { loadStripe } from "@stripe/stripe-js";
+import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-stripe-js";
 
 const DetailSkeleton = () => (
   <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-4 pb-24 pt-24 text-white">
@@ -33,6 +35,29 @@ const formatCurrency = (amount, currencyCode = "EUR") => {
   }
 };
 
+const parseAmount = (value) => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+};
+
+const REQUIRED_RECIPIENT_FIELDS = [
+  { key: "name", label: "Nombre completo" },
+  { key: "email", label: "Email" },
+  { key: "addressLine1", label: "Dirección" },
+  { key: "city", label: "Ciudad" },
+  { key: "postalCode", label: "Código postal" },
+  { key: "countryCode", label: "País" },
+];
+
+const getInitialPaymentState = () => ({
+  loading: false,
+  clientSecret: null,
+  amount: null,
+  currency: "EUR",
+  pricing: null,
+  error: null,
+});
+
 const getColorPreviewStyle = (code) => {
   if (!code) return {};
   const candidate = code.startsWith("#") ? code : `#${code}`;
@@ -40,6 +65,70 @@ const getColorPreviewStyle = (code) => {
     return { backgroundColor: candidate };
   }
   return { backgroundColor: code };
+};
+
+const CheckoutPaymentForm = ({
+  amount,
+  currency,
+  onSuccess,
+  onError,
+  onProcessingChange,
+  submitLabel,
+}) => {
+  const stripe = useStripe();
+  const elements = useElements();
+  const [processing, setProcessing] = useState(false);
+
+  const handleSubmit = useCallback(
+    async (event) => {
+      event.preventDefault();
+      if (!stripe || !elements) {
+        return;
+      }
+
+      try {
+        setProcessing(true);
+        onProcessingChange?.(true);
+
+        const result = await stripe.confirmPayment({
+          elements,
+          redirect: "if_required",
+        });
+
+        if (result.error) {
+          console.error("Stripe payment confirmation failed", result.error);
+          onError?.(result.error.message || "No pudimos confirmar el pago.");
+        } else {
+          onSuccess?.(result.paymentIntent);
+        }
+      } catch (error) {
+        console.error("Stripe payment confirmation threw", error);
+        onError?.(error.message || "No pudimos confirmar el pago.");
+      } finally {
+        setProcessing(false);
+        onProcessingChange?.(false);
+      }
+    },
+    [stripe, elements, onError, onProcessingChange, onSuccess]
+  );
+
+  const buttonLabel = submitLabel ||
+    (processing
+      ? "Procesando pago..."
+      : `Pagar ${formatCurrency(amount, currency)}`);
+
+  return (
+    <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+      <PaymentElement options={{ layout: "tabs" }} />
+      <button
+        type="submit"
+        disabled={!stripe || processing}
+        className="rounded-full bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.3em] text-black transition hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {buttonLabel}
+      </button>
+    </form>
+  );
 };
 
 const PhotoDetail = () => {
@@ -80,8 +169,55 @@ const PhotoDetail = () => {
   const [quoteState, setQuoteState] = useState({
     loading: false,
     quote: null,
+    pricing: null,
     error: null,
   });
+  const [lastQuoteContext, setLastQuoteContext] = useState(null);
+
+  const [stripePromise, setStripePromise] = useState(null);
+  const [stripeConfigError, setStripeConfigError] = useState(null);
+  const [paymentIntentState, setPaymentIntentState] = useState(() =>
+    getInitialPaymentState()
+  );
+  const [paymentProcessing, setPaymentProcessing] = useState(false);
+  const [paymentSuccess, setPaymentSuccess] = useState(null);
+
+  const resetPaymentFlow = useCallback(() => {
+    setPaymentIntentState(getInitialPaymentState());
+    setPaymentProcessing(false);
+    setPaymentSuccess(null);
+  }, []);
+
+  const handlePaymentSuccess = useCallback((paymentIntent) => {
+    setPaymentProcessing(false);
+    setPaymentSuccess(paymentIntent?.id || null);
+    setPaymentIntentState((prev) => ({
+      ...prev,
+      error: null,
+    }));
+    setOrderFeedback({
+      submitting: false,
+      success:
+        "Pago confirmado correctamente. Estamos procesando tu pedido en Prodigi.",
+      error: null,
+    });
+  }, []);
+
+  const handlePaymentError = useCallback((message) => {
+    const fallback =
+      message ||
+      "No pudimos confirmar el pago con la tarjeta. Revisa los datos e inténtalo otra vez.";
+    setPaymentProcessing(false);
+    setPaymentIntentState((prev) => ({
+      ...prev,
+      error: fallback,
+    }));
+    setOrderFeedback({ submitting: false, success: null, error: fallback });
+  }, []);
+
+  const handleProcessingChange = useCallback((status) => {
+    setPaymentProcessing(Boolean(status));
+  }, []);
 
   const [productDetailsCache, setProductDetailsCache] = useState({});
 
@@ -103,6 +239,59 @@ const PhotoDetail = () => {
 
     fetchPhoto();
   }, [photoId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchStripeConfig = async () => {
+      try {
+        const { data } = await api.get("/payments/config");
+        const publishableKey = data?.publishableKey;
+        if (!publishableKey) {
+          throw new Error("No publishable key returned");
+        }
+        if (!cancelled) {
+          setStripePromise(loadStripe(publishableKey));
+          setStripeConfigError(null);
+        }
+      } catch (err) {
+        console.error("Error fetching Stripe config", err);
+        if (!cancelled) {
+          setStripeConfigError(
+            "No se pudo inicializar el pago seguro. Inténtalo más tarde."
+          );
+        }
+      }
+    };
+
+    fetchStripeConfig();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (
+      !paymentIntentState.clientSecret &&
+      !paymentIntentState.loading &&
+      !paymentSuccess
+    ) {
+      return;
+    }
+
+    resetPaymentFlow();
+    setOrderFeedback({ submitting: false, success: null, error: null });
+  }, [
+    orderState.variantId,
+    orderState.copies,
+    orderState.colorCode,
+    orderState.recipient.countryCode,
+    paymentIntentState.clientSecret,
+    paymentIntentState.loading,
+    paymentSuccess,
+    resetPaymentFlow,
+  ]);
 
   useEffect(() => {
     const fetchVariants = async () => {
@@ -326,44 +515,150 @@ const PhotoDetail = () => {
   const handleOrderSubmit = async (event) => {
     event.preventDefault();
 
-    if (!photo?._id || !orderState.variantId) {
+    if (paymentIntentState.clientSecret) {
+      // El formulario de Stripe se encarga del paso final.
+      return;
+    }
+
+    if (!photoIdValue || !orderState.variantId || !selectedVariant) {
+      setOrderFeedback({
+        submitting: false,
+        success: null,
+        error: "Selecciona un producto para continuar.",
+      });
+      return;
+    }
+
+    const missingFields = REQUIRED_RECIPIENT_FIELDS.filter(({ key }) => {
+      const value = orderState.recipient[key];
+      return !value || !String(value).trim();
+    });
+
+    if (missingFields.length) {
+      setOrderFeedback({
+        submitting: false,
+        success: null,
+        error: `Completa los campos obligatorios: ${missingFields
+          .map((field) => field.label)
+          .join(", ")}.`,
+      });
+      return;
+    }
+
+    if (!stripePromise) {
+      setOrderFeedback({
+        submitting: false,
+        success: null,
+        error:
+          stripeConfigError ||
+          "La pasarela de pago no está lista. Inténtalo de nuevo más tarde.",
+      });
+      return;
+    }
+
+    if (!lastQuoteContext || lastQuoteContext.variantId !== orderState.variantId) {
+      setOrderFeedback({
+        submitting: false,
+        success: null,
+        error:
+          "Estamos terminando de calcular el precio. Inténtalo nuevamente en unos segundos.",
+      });
+      return;
+    }
+
+    const colorCodePayload = selectedVariant?.colorOptions?.length
+      ? orderState.colorCode || selectedVariant.colorOptions[0]?.code
+      : undefined;
+    const normalizedColorCode = colorCodePayload
+      ? String(colorCodePayload).toUpperCase()
+      : undefined;
+    const normalizedCountry = (orderState.recipient.countryCode || "ES").toUpperCase();
+
+    const matchesQuote =
+      lastQuoteContext &&
+      lastQuoteContext.variantId === orderState.variantId &&
+      lastQuoteContext.copies === orderState.copies &&
+      (lastQuoteContext.colorCode || undefined) === normalizedColorCode &&
+      lastQuoteContext.destinationCountryCode === normalizedCountry;
+
+    if (!matchesQuote) {
+      setOrderFeedback({
+        submitting: false,
+        success: null,
+        error:
+          "Estamos actualizando la cotización con los últimos datos. Inténtalo nuevamente en unos segundos.",
+      });
       return;
     }
 
     setOrderFeedback({ submitting: true, success: null, error: null });
+    setPaymentIntentState((prev) => ({
+      ...prev,
+      loading: true,
+      error: null,
+    }));
 
     try {
-      const colorCodePayload = selectedVariant?.colorOptions?.length
-        ? orderState.colorCode || selectedVariant.colorOptions[0]?.code
-        : undefined;
-
-      const { data } = await api.post("/prodigi/orders", {
-        photoId: photo._id,
+      const payload = {
+        photoId: photoIdValue,
         variantId: orderState.variantId,
-        colorCode: colorCodePayload,
+        colorCode: normalizedColorCode,
         copies: orderState.copies,
-        recipient: orderState.recipient,
+        recipient: {
+          ...orderState.recipient,
+          countryCode: normalizedCountry,
+        },
+        shippingMethod: undefined,
+        productAttributes: lastQuoteContext.productAttributes,
+        assetUrl: selectedColorData?.assetUrl || selectedVariant.assetUrl || undefined,
+      };
+
+      const { data } = await api.post(
+        "/payments/order/payment-intent",
+        payload
+      );
+
+      const pricing = data?.pricing || null;
+
+      setPaymentIntentState({
+        loading: false,
+        clientSecret: data?.clientSecret || null,
+        amount: data?.amount || pricing?.totalWithMargin || null,
+        currency: data?.currency || pricing?.currency || quoteCurrency,
+        pricing,
+        error: null,
       });
+
+      if (pricing) {
+        setQuoteState((prev) => ({
+          ...prev,
+          pricing,
+        }));
+      }
 
       setOrderFeedback({
         submitting: false,
-        success: data?.order?.id
-          ? `Pedido creado correctamente. ID: ${data.order.id}`
-          : "Pedido creado correctamente.",
+        success: "Pago listo. Completa los datos de tu tarjeta para finalizar.",
         error: null,
       });
     } catch (err) {
-      console.error("Error creating Prodigi order", err);
+      console.error("Error preparing payment intent", err);
       const message =
         err.response?.data?.error ||
-        "No pudimos procesar tu pedido. Inténtalo nuevamente.";
+        "No pudimos preparar el pago. Revisa los datos e inténtalo nuevamente.";
+      setPaymentIntentState((prev) => ({
+        ...prev,
+        loading: false,
+        clientSecret: null,
+        error: message,
+      }));
       setOrderFeedback({ submitting: false, success: null, error: message });
     }
   };
 
   useEffect(() => {
     if (!photoIdValue || !orderState.variantId) {
-      setQuoteState({ loading: false, quote: null, error: null });
+      setQuoteState({ loading: false, quote: null, pricing: null, error: null });
       return;
     }
 
@@ -371,7 +666,7 @@ const PhotoDetail = () => {
       setQuoteState((prev) =>
         prev.loading && !prev.quote && !prev.error
           ? prev
-          : { loading: true, quote: null, error: null }
+          : { loading: true, quote: null, pricing: prev.pricing || null, error: null }
       );
       console.log("[Prodigi] waiting for variant before quote", {
         photoId: photoIdValue,
@@ -384,6 +679,7 @@ const PhotoDetail = () => {
       setQuoteState({
         loading: false,
         quote: null,
+        pricing: null,
         error: "No se encontró el SKU del producto para cotizar.",
       });
       console.warn("[Prodigi] missing SKU for variant", {
@@ -396,7 +692,7 @@ const PhotoDetail = () => {
       setQuoteState((prev) =>
         prev.loading && !prev.quote && !prev.error
           ? prev
-          : { loading: true, quote: null, error: null }
+          : { loading: true, quote: null, pricing: prev.pricing || null, error: null }
       );
       console.log("[Prodigi] awaiting product details before quote", {
         sku: selectedVariantSku,
@@ -409,6 +705,7 @@ const PhotoDetail = () => {
       setQuoteState({
         loading: false,
         quote: null,
+        pricing: null,
         error: selectedProductDetailsEntry.error,
       });
       console.warn("[Prodigi] product details error prevents quote", {
@@ -421,10 +718,18 @@ const PhotoDetail = () => {
     const controller = new AbortController();
 
     const fetchQuote = async () => {
-      setQuoteState({ loading: true, quote: null, error: null });
+      setQuoteState({
+        loading: true,
+        quote: null,
+        pricing: null,
+        error: null,
+      });
       try {
         const colorCodePayload = selectedVariant?.colorOptions?.length
           ? orderState.colorCode || selectedVariant.colorOptions[0]?.code
+          : undefined;
+        const normalizedColorForQuote = colorCodePayload
+          ? String(colorCodePayload).toUpperCase()
           : undefined;
 
         const detailsData = selectedProductDetailsEntry.data || {};
@@ -454,7 +759,7 @@ const PhotoDetail = () => {
           {
             photoId: photoIdValue,
             variantId: orderState.variantId,
-            colorCode: colorCodePayload,
+            colorCode: normalizedColorForQuote,
             copies: orderState.copies,
             destinationCountryCode:
               orderState.recipient.countryCode || "ES",
@@ -472,7 +777,20 @@ const PhotoDetail = () => {
           quote: selectedQuote,
         });
 
-        setQuoteState({ loading: false, quote: selectedQuote, error: null });
+        setQuoteState({
+          loading: false,
+          quote: selectedQuote,
+          pricing: data?.pricing || null,
+          error: null,
+        });
+        setLastQuoteContext({
+          photoId: photoIdValue,
+          variantId: orderState.variantId,
+          colorCode: normalizedColorForQuote,
+          copies: orderState.copies,
+          destinationCountryCode: orderState.recipient.countryCode || "ES",
+          productAttributes: attributesPayload,
+        });
       } catch (err) {
         if (controller.signal.aborted || err.code === "ERR_CANCELED") {
           return;
@@ -486,7 +804,12 @@ const PhotoDetail = () => {
           error: message,
           details: err.response?.data,
         });
-        setQuoteState({ loading: false, quote: null, error: message });
+        setQuoteState({
+          loading: false,
+          quote: null,
+          pricing: null,
+          error: message,
+        });
       }
     };
 
@@ -529,19 +852,35 @@ const PhotoDetail = () => {
     createdAt,
   } = photo;
 
-  const quoteCostItems = quoteState.quote?.costSummary?.items;
-  const quoteCostShipping = quoteState.quote?.costSummary?.shipping;
-  const parsedItemsAmount = Number(quoteCostItems?.amount ?? 0);
-  const parsedShippingAmount = Number(quoteCostShipping?.amount ?? 0);
-  const validItemsAmount = Number.isFinite(parsedItemsAmount)
-    ? parsedItemsAmount
-    : 0;
-  const validShippingAmount = Number.isFinite(parsedShippingAmount)
-    ? parsedShippingAmount
-    : 0;
-  const quoteTotalAmount = validItemsAmount + validShippingAmount;
+  const resolvedPricing =
+    paymentIntentState.pricing || quoteState.pricing || null;
+  const prodigiItemsAmount = parseAmount(
+    resolvedPricing?.prodigiItemsAmount || quoteState.quote?.costSummary?.items?.amount
+  );
+  const prodigiShippingAmount = parseAmount(
+    resolvedPricing?.prodigiShippingAmount || quoteState.quote?.costSummary?.shipping?.amount
+  );
+  const prodigiTaxAmount = parseAmount(
+    resolvedPricing?.prodigiTaxAmount || quoteState.quote?.costSummary?.tax?.amount
+  );
+  const prodigiFeesAmount = parseAmount(
+    resolvedPricing?.prodigiFeesAmount || quoteState.quote?.costSummary?.fees?.amount
+  );
+  const platformMarginAmount = parseAmount(
+    resolvedPricing?.platformMargin ?? selectedVariant?.profitMargin
+  );
+  const prodigiTotal = parseAmount(
+    resolvedPricing?.prodigiTotal ||
+      prodigiItemsAmount + prodigiShippingAmount + prodigiTaxAmount + prodigiFeesAmount
+  );
+  const quoteTotalAmount = parseAmount(
+    resolvedPricing?.totalWithMargin || prodigiTotal + platformMarginAmount
+  );
   const quoteCurrency =
-    quoteCostItems?.currency || quoteCostShipping?.currency || "EUR";
+    resolvedPricing?.currency ||
+    selectedVariant?.currency ||
+    quoteState.quote?.currency ||
+    "EUR";
   const productDetailsStatus = selectedProductDetailsEntry?.status || null;
   const productDetailsError = selectedProductDetailsEntry?.error || null;
 
@@ -668,6 +1007,17 @@ const PhotoDetail = () => {
                       </span>
                     </p>
                   )}
+                  {selectedVariant?.profitMargin !== undefined && (
+                    <p className="text-[0.6rem] text-white/50">
+                      Margen configurado:
+                      <span className="ml-1 text-white">
+                        {formatCurrency(
+                          selectedVariant.profitMargin,
+                          selectedVariant.currency || quoteCurrency
+                        )}
+                      </span>
+                    </p>
+                  )}
                 </div>
 
                 {selectedVariant?.colorOptions?.length ? (
@@ -737,8 +1087,8 @@ const PhotoDetail = () => {
                   <p className="text-[0.6rem] text-white/50">Calculando precio...</p>
                 ) : quoteState.error ? (
                   <p className="text-[0.6rem] text-red-300">{quoteState.error}</p>
-                ) : quoteState.quote ? (
-                  <div className="text-[0.6rem] text-white/60">
+                ) : resolvedPricing ? (
+                  <div className="space-y-1 text-[0.6rem] text-white/60">
                     <p>
                       Total estimado:
                       <span className="ml-1 text-white">
@@ -746,14 +1096,16 @@ const PhotoDetail = () => {
                       </span>
                     </p>
                     <p className="text-white/40">
-                      Productos: {formatCurrency(
-                        quoteCostItems?.amount,
-                        quoteCostItems?.currency
-                      )} · Envío:{" "}
-                      {formatCurrency(
-                        quoteCostShipping?.amount,
-                        quoteCostShipping?.currency
-                      )}
+                      Prodigi: {formatCurrency(prodigiTotal, quoteCurrency)} · Productos {formatCurrency(prodigiItemsAmount, quoteCurrency)} · Envío {formatCurrency(prodigiShippingAmount, quoteCurrency)}
+                      {prodigiTaxAmount > 0
+                        ? ` · Impuestos ${formatCurrency(prodigiTaxAmount, quoteCurrency)}`
+                        : ""}
+                      {prodigiFeesAmount > 0
+                        ? ` · Tasas ${formatCurrency(prodigiFeesAmount, quoteCurrency)}`
+                        : ""}
+                    </p>
+                    <p className="text-white/40">
+                      Tu margen: {formatCurrency(platformMarginAmount, quoteCurrency)}
                     </p>
                   </div>
                 ) : null}
@@ -915,15 +1267,73 @@ const PhotoDetail = () => {
                   </div>
                 </div>
 
-                <button
-                  type="submit"
-                  disabled={orderFeedback.submitting}
-                  className="mt-1 rounded-full border border-white/30 px-4 py-3 text-[0.6rem] font-semibold uppercase tracking-[0.35em] text-white transition hover:border-white/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-white/40"
-                >
-                  {orderFeedback.submitting
-                    ? "Creando pedido..."
-                    : "Comprar impresión"}
-                </button>
+                {paymentIntentState.clientSecret ? (
+                  <div className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-black/40 p-4">
+                    {paymentSuccess ? (
+                      <p className="rounded-xl border border-emerald-400/40 bg-emerald-400/10 px-3 py-2 text-[0.65rem] text-emerald-200">
+                        Pago confirmado. ID Stripe: {paymentSuccess}
+                      </p>
+                    ) : stripePromise ? (
+                      <Elements
+                        key={paymentIntentState.clientSecret}
+                        stripe={stripePromise}
+                        options={{ clientSecret: paymentIntentState.clientSecret }}
+                      >
+                        <CheckoutPaymentForm
+                          amount={paymentIntentState.amount || quoteTotalAmount}
+                          currency={
+                            paymentIntentState.currency || quoteCurrency || "EUR"
+                          }
+                          onSuccess={handlePaymentSuccess}
+                          onError={handlePaymentError}
+                          onProcessingChange={handleProcessingChange}
+                        />
+                      </Elements>
+                    ) : (
+                      <p className="text-[0.6rem] text-red-300">
+                        No pudimos cargar la pasarela de pago segura.
+                      </p>
+                    )}
+
+                    {paymentIntentState.error && !paymentProcessing && (
+                      <p className="rounded-xl border border-red-400/40 bg-red-400/10 px-3 py-2 text-[0.65rem] text-red-200">
+                        {paymentIntentState.error}
+                      </p>
+                    )}
+
+                    {!paymentSuccess && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          resetPaymentFlow();
+                          setOrderFeedback({
+                            submitting: false,
+                            success: null,
+                            error: null,
+                          });
+                        }}
+                        className="rounded-full border border-white/20 px-4 py-2 text-[0.6rem] uppercase tracking-[0.3em] text-white/70 transition hover:border-white/40 hover:text-white"
+                        disabled={paymentProcessing}
+                      >
+                        Modificar datos
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={
+                      orderFeedback.submitting ||
+                      paymentIntentState.loading ||
+                      !stripePromise
+                    }
+                    className="mt-1 rounded-full border border-white/30 px-4 py-3 text-[0.6rem] font-semibold uppercase tracking-[0.35em] text-white transition hover:border-white/60 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-white/40"
+                  >
+                    {orderFeedback.submitting || paymentIntentState.loading
+                      ? "Preparando pago..."
+                      : "Ir al pago seguro"}
+                  </button>
+                )}
 
                 {orderFeedback.success && (
                   <p className="rounded-xl border border-emerald-400/40 bg-emerald-400/10 px-3 py-2 text-[0.65rem] text-emerald-200">
@@ -933,6 +1343,11 @@ const PhotoDetail = () => {
                 {orderFeedback.error && (
                   <p className="rounded-xl border border-red-400/40 bg-red-400/10 px-3 py-2 text-[0.65rem] text-red-200">
                     {orderFeedback.error}
+                  </p>
+                )}
+                {stripeConfigError && !stripePromise && (
+                  <p className="rounded-xl border border-red-400/40 bg-red-400/10 px-3 py-2 text-[0.65rem] text-red-200">
+                    {stripeConfigError}
                   </p>
                 )}
               </form>
