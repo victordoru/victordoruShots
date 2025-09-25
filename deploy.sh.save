@@ -1,0 +1,16 @@
+npm install
+
+# Construir proyecto
+echo "🔨 Construyendo proyecto..."
+npm run build
+
+# Cambiar a www-data para Apache
+echo "�� Configurando permisos para Apache..."
+sudo chown -R www-data:www-data /var/www/html/photography-web/Front
+
+# Recargar Apache
+echo "�� Recargando Apache..."
+sudo systemctl reload apache2
+
+echo "✅ ¡Despliegue completado! Tu sitio está actualizado."
+echo "�� Visita: https://victodorushots.com"
