@@ -19,6 +19,8 @@ const ensureProdigiConfigured = () => {
   }
 };
 
+const assetCache = new Map();
+
 const buildUrl = (path) => {
   const sanitizedBase = PRODIGI_BASE_URL.replace(/\/$/, "");
   const cleanedPath = path.startsWith("/") ? path.slice(1) : path;
@@ -66,9 +68,61 @@ const prodigiRequest = async (path, { method = "GET", headers = {}, body } = {})
   return data;
 };
 
+const uploadProdigiAsset = async (assetUrl) => {
+  ensureProdigiConfigured();
+
+  if (!assetUrl || !/^https?:\/\//i.test(assetUrl)) {
+    return null;
+  }
+
+  if (assetCache.has(assetUrl)) {
+    return assetCache.get(assetUrl);
+  }
+
+  const payload = {
+    items: [
+      {
+        assets: [
+          {
+            type: "PrintFile",
+            source: {
+              url: assetUrl,
+            },
+          },
+        ],
+      },
+    ],
+  };
+
+  try {
+    const response = await prodigiRequest("/Assets", {
+      method: "POST",
+      body: payload,
+    });
+
+    const assetId =
+      response?.items?.[0]?.assets?.[0]?.id || response?.assets?.[0]?.id || null;
+
+    if (!assetId) {
+      console.warn("[Prodigi] Asset upload did not return an id", response);
+      assetCache.set(assetUrl, null);
+      return null;
+    }
+
+    const cacheEntry = { assetId };
+    assetCache.set(assetUrl, cacheEntry);
+    return cacheEntry;
+  } catch (error) {
+    console.warn("[Prodigi] Failed to upload asset", { assetUrl, error: error.message });
+    assetCache.set(assetUrl, null);
+    return null;
+  }
+};
+
 module.exports = {
   isProdigiConfigured,
   ensureProdigiConfigured,
   prodigiRequest,
   PRODIGI_BASE_URL,
+  uploadProdigiAsset,
 };

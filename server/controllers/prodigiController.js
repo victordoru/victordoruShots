@@ -10,6 +10,7 @@ const ProdigiOrder = require("../models/ProdigiOrder");
 const {
   isProdigiConfigured,
   prodigiRequest,
+  uploadProdigiAsset,
 } = require("../utils/prodigiClient");
 
 const PRODIGI_ASSET_BASE_URL = process.env.PRODIGI_ASSET_BASE_URL;
@@ -1234,7 +1235,21 @@ const computeQuoteForVariant = async ({
   ];
 
   if (resolvedAssetUrl && /^https?:\/\//i.test(resolvedAssetUrl)) {
-    assetsPayload[0].url = resolvedAssetUrl;
+    try {
+      const uploaded = await uploadProdigiAsset(resolvedAssetUrl);
+      if (uploaded?.assetId) {
+        assetsPayload[0].assetId = uploaded.assetId;
+      } else {
+        console.warn("[Prodigi] Asset upload returned no id, quoting without assetId", {
+          resolvedAssetUrl,
+        });
+      }
+    } catch (assetError) {
+      console.warn("[Prodigi] Asset upload failed, quoting without assetId", {
+        resolvedAssetUrl,
+        error: assetError.message,
+      });
+    }
   }
 
   const attributesFromRequest =
@@ -1302,6 +1317,7 @@ const computeQuoteForVariant = async ({
     assetPayload: assetsPayload,
     quotePayload,
   });
+  console.log("[Prodigi] Quote payload item details", quotePayload.items?.[0]);
 
   const prodigiResponse = await prodigiRequest("/Quotes", {
     method: "POST",
