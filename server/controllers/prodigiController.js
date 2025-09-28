@@ -1297,18 +1297,22 @@ const computeQuoteForVariant = async ({
     items: [itemPayload],
   };
 
+  console.log("[Prodigi] Quote payload", {
+    sku,
+    assetPayload: assetsPayload,
+    quotePayload,
+  });
+
   const prodigiResponse = await prodigiRequest("/Quotes", {
     method: "POST",
     body: quotePayload,
   });
 
-  console.log("[Prodigi] Quote requested", {
+  console.log("[Prodigi] Quote response received:", {
     sku,
-    copies: copiesToPrint,
-    destination: normalizedDestination,
-    shippingMethod: normalizedShippingMethod,
-    attributeKeys: Object.keys(itemPayload.attributes || {}),
-    hasAssetUrl: Boolean(itemPayload.assets?.[0]?.url),
+    outcome: prodigiResponse?.outcome,
+    quotesCount: Array.isArray(prodigiResponse?.quotes) ? prodigiResponse.quotes.length : 0,
+    response: JSON.stringify(prodigiResponse, null, 2),
   });
 
   return {
@@ -1380,7 +1384,14 @@ const getQuote = async (req, res) => {
       pricing,
     });
   } catch (error) {
-    console.error("Error getting Prodigi quote", error);
+    console.error("[Prodigi] Error getting quote - DETAILED:", {
+      message: error.message,
+      status: error.status,
+      data: error.data,
+      details: error.details,
+      stack: error.stack,
+      fullError: JSON.stringify(error, Object.getOwnPropertyNames(error), 2),
+    });
     const status = error.status || 500;
     res.status(status).json({
       error: error.message || "No se pudo obtener la cotización de Prodigi",
