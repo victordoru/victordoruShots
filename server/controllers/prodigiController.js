@@ -1498,18 +1498,22 @@ const placeProdigiOrder = async ({
     throw err;
   }
 
-  const assetUrl =
+  /* Obtener la URL del asset (puede ser relativa o absoluta) */
+  const rawAssetUrl =
     selectedColor?.assetUrl ||
     variant.assetUrl ||
-    buildAssetUrl(photo.imagePath);
+    photo.imagePath;
 
-  if (!assetUrl) {
+  if (!rawAssetUrl) {
     const err = new Error(
       "No hay un assetUrl disponible para esta variante. Configura uno en Content Management."
     );
     err.status = 400;
     throw err;
   }
+
+  /* Convertir la URL a absoluta si es necesaria */
+  const assetUrl = buildAssetUrl(rawAssetUrl);
 
   const orderAsset = {
     printArea: "default",
