@@ -24,6 +24,30 @@ const sanitizeInt = (value, fallback = 1) => {
 };
 
 const normalizeRecipient = (recipient = {}) => {
+  /* Si ya está normalizado (tiene la estructura con address como objeto), lo devolvemos tal cual */
+  if (recipient.address && typeof recipient.address === 'object') {
+    /* Validamos que tenga los campos mínimos requeridos de Prodigi */
+    const requiredAddressFields = ['line1', 'townOrCity', 'postalOrZipCode', 'countryCode'];
+    const missingAddress = requiredAddressFields.filter(field => !recipient.address[field]);
+    
+    if (missingAddress.length) {
+      const error = new Error(
+        `Faltan campos obligatorios en address: ${missingAddress.join(", ")}`
+      );
+      error.status = 400;
+      throw error;
+    }
+    
+    if (!recipient.name || !recipient.email) {
+      const error = new Error("Faltan campos obligatorios: name, email");
+      error.status = 400;
+      throw error;
+    }
+    
+    return recipient; // Ya está normalizado
+  }
+
+  /* Si tiene la estructura plana (addressLine1, city, etc.), lo normalizamos */
   const requiredFields = [
     "name",
     "email",
@@ -362,18 +386,33 @@ const summarizeProdigiQuote = (prodigiResponse) => {
 
   const itemsAmount = toNumber(costSummary.items?.amount);
   const shippingAmount = toNumber(costSummary.shipping?.amount);
-  const taxAmount = toNumber(costSummary.tax?.amount);
+  const taxAmount = toNumber(costSummary.totalTax?.amount); // ← Cambiado de tax a totalTax
   const feesAmount = toNumber(costSummary.fees?.amount);
+  const brandingAmount = toNumber(costSummary.branding?.amount);
 
   const currency =
+    costSummary.totalCost?.currency ||
     costSummary.items?.currency ||
     costSummary.shipping?.currency ||
-    costSummary.tax?.currency ||
-    costSummary.fees?.currency ||
     primaryQuote?.currency ||
     "EUR";
 
-  const prodigiTotal = itemsAmount + shippingAmount + taxAmount + feesAmount;
+  /* Usamos totalCost de Prodigi si está disponible, sino lo calculamos */
+  const prodigiTotal = costSummary.totalCost?.amount
+    ? toNumber(costSummary.totalCost.amount)
+    : itemsAmount + shippingAmount + brandingAmount + taxAmount + feesAmount;
+
+  console.log("[Prodigi] Quote pricing breakdown:", {
+    items: itemsAmount,
+    shipping: shippingAmount,
+    branding: brandingAmount,
+    tax: taxAmount,
+    fees: feesAmount,
+    calculatedTotal: itemsAmount + shippingAmount + brandingAmount + taxAmount + feesAmount,
+    prodigiTotalCost: costSummary.totalCost?.amount,
+    finalTotal: prodigiTotal,
+    currency
+  });
 
   return {
     quoteId: primaryQuote?.id || primaryQuote?.quoteId || null,
@@ -1428,6 +1467,7 @@ const placeProdigiOrder = async ({
   paymentStatus,
   pricing,
   merchantReference: providedMerchantReference,
+  productAttributes,
 }) => {
   if (!isProdigiConfigured) {
     const err = new Error("La integración con Prodigi no está configurada todavía.");
@@ -1466,6 +1506,29 @@ const placeProdigiOrder = async ({
     throw err;
   }
 
+  const orderAsset = {
+    printArea: "default",
+  };
+
+  if (assetUrl && /^https?:\/\//i.test(assetUrl)) {
+    try {
+      const uploaded = await uploadProdigiAsset(assetUrl);
+      if (uploaded?.assetId) {
+        orderAsset.assetId = uploaded.assetId;
+      } else {
+        orderAsset.url = assetUrl;
+      }
+    } catch (assetError) {
+      console.warn("[Prodigi] Asset upload for order failed, falling back to url", {
+        assetUrl,
+        error: assetError.message,
+      });
+      orderAsset.url = assetUrl;
+    }
+  } else {
+    orderAsset.url = assetUrl;
+  }
+
   let normalizedRecipient;
   try {
     normalizedRecipient = normalizeRecipient(recipient);
@@ -1479,6 +1542,30 @@ const placeProdigiOrder = async ({
   const merchantReference =
     providedMerchantReference || `photo-${photo._id}-${randomUUID()}`;
 
+  /* Construir attributes para el item */
+  const itemAttributes = {};
+  
+  /* Si tenemos productAttributes del quote, los usamos */
+  if (productAttributes && typeof productAttributes === 'object') {
+    Object.assign(itemAttributes, productAttributes);
+  }
+  
+  /* Si tenemos atributos almacenados en el variant, los mezclamos */
+  if (variant.productAttributes && typeof variant.productAttributes === 'object') {
+    Object.assign(itemAttributes, variant.productAttributes);
+  }
+
+  /* Si el usuario seleccionó un color específico, sobrescribimos el atributo 'color' */
+  if (selectedColor?.code) {
+    /* Normalizamos el código de color a minúsculas para Prodigi */
+    itemAttributes.color = selectedColor.code.toLowerCase();
+    console.log("[Prodigi] Overriding color attribute:", {
+      selectedColorCode: selectedColor.code,
+      normalizedColor: itemAttributes.color,
+      previousColor: productAttributes?.color || variant.productAttributes?.color
+    });
+  }
+
   const orderPayload = {
     merchantReference,
     shippingMethod: shippingMethod || DEFAULT_SHIPPING_METHOD,
@@ -1490,12 +1577,8 @@ const placeProdigiOrder = async ({
         copies: copiesToPrint,
         sizing:
           variant.sizing || variant.catalogProduct?.defaultSizing || "fillPrintArea",
-        assets: [
-          {
-            printArea: "default",
-            url: assetUrl,
-          },
-        ],
+        ...(Object.keys(itemAttributes).length > 0 && { attributes: itemAttributes }),
+        assets: [orderAsset],
         metadata: {
           variantId: String(variant._id),
           variantName: variant.displayName || variant.catalogProduct.name,
@@ -1523,6 +1606,8 @@ const placeProdigiOrder = async ({
     },
   };
 
+  console.log("[Prodigi] Creating order with payload:", JSON.stringify(orderPayload, null, 2));
+  
   const prodigiResponse = await prodigiRequest("/Orders", {
     method: "POST",
     body: orderPayload,

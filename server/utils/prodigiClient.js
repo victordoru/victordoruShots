@@ -76,7 +76,9 @@ const uploadProdigiAsset = async (assetUrl) => {
   }
 
   if (assetCache.has(assetUrl)) {
-    return assetCache.get(assetUrl);
+    const cachedResult = assetCache.get(assetUrl);
+    console.log("[Prodigi] Using cached asset:", { assetUrl, cachedResult });
+    return cachedResult;
   }
 
   const payload = {
@@ -111,6 +113,7 @@ const uploadProdigiAsset = async (assetUrl) => {
 
     const cacheEntry = { assetId };
     assetCache.set(assetUrl, cacheEntry);
+    console.log("[Prodigi] Asset upload successful:", { assetUrl, assetId });
     return cacheEntry;
   } catch (error) {
     console.warn("[Prodigi] Failed to upload asset", { assetUrl, error: error.message });

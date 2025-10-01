@@ -4,6 +4,7 @@ import api from "@/utils/axiosInstance";
 import { loadStripe } from "@stripe/stripe-js";
 import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-stripe-js";
 
+/* Componente skeleton que se muestra mientras carga la página */
 const DetailSkeleton = () => (
   <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-4 pb-24 pt-24 text-white">
     <div className="h-[60vh] w-full animate-pulse rounded-3xl bg-white/10" />
@@ -18,6 +19,7 @@ const DetailSkeleton = () => (
   </div>
 );
 
+/* Función auxiliar para formatear cantidades monetarias según la localización */
 const formatCurrency = (amount, currencyCode = "EUR") => {
   const numericAmount = Number(amount);
   if (Number.isNaN(numericAmount)) {
@@ -30,16 +32,18 @@ const formatCurrency = (amount, currencyCode = "EUR") => {
       currency: currencyCode || "EUR",
       minimumFractionDigits: 2,
     }).format(numericAmount);
-  } catch (error) {
+  } catch {
     return `${numericAmount.toFixed(2)} ${currencyCode || ""}`.trim();
   }
 };
 
+/* Función auxiliar para parsear valores monetarios de forma segura */
 const parseAmount = (value) => {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : 0;
 };
 
+/* Campos obligatorios del destinatario que deben completarse antes del pago */
 const REQUIRED_RECIPIENT_FIELDS = [
   { key: "name", label: "Nombre completo" },
   { key: "email", label: "Email" },
@@ -49,6 +53,7 @@ const REQUIRED_RECIPIENT_FIELDS = [
   { key: "countryCode", label: "País" },
 ];
 
+/* Estado inicial del payment intent de Stripe */
 const getInitialPaymentState = () => ({
   loading: false,
   clientSecret: null,
@@ -58,6 +63,7 @@ const getInitialPaymentState = () => ({
   error: null,
 });
 
+/* Función auxiliar para generar estilos CSS del preview de color */
 const getColorPreviewStyle = (code) => {
   if (!code) return {};
   const candidate = code.startsWith("#") ? code : `#${code}`;
@@ -67,6 +73,8 @@ const getColorPreviewStyle = (code) => {
   return { backgroundColor: code };
 };
 
+/* Componente del formulario de pago con Stripe Elements */
+// eslint-disable-next-line react/prop-types
 const CheckoutPaymentForm = ({
   amount,
   currency,
@@ -79,6 +87,7 @@ const CheckoutPaymentForm = ({
   const elements = useElements();
   const [processing, setProcessing] = useState(false);
 
+  /* Handler para confirmar el pago a través de Stripe */
   const handleSubmit = useCallback(
     async (event) => {
       event.preventDefault();
@@ -90,6 +99,7 @@ const CheckoutPaymentForm = ({
         setProcessing(true);
         onProcessingChange?.(true);
 
+        /* API Stripe - Confirmar el pago con la información de la tarjeta ingresada */
         const result = await stripe.confirmPayment({
           elements,
           redirect: "if_required",
@@ -118,31 +128,43 @@ const CheckoutPaymentForm = ({
       : `Pagar ${formatCurrency(amount, currency)}`);
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+    <div className="flex flex-col gap-4">
       <PaymentElement options={{ layout: "tabs" }} />
       <button
-        type="submit"
+        type="button"
+        onClick={handleSubmit}
         disabled={!stripe || processing}
         className="rounded-full bg-white px-6 py-3 text-sm font-semibold uppercase tracking-[0.3em] text-black transition hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {buttonLabel}
       </button>
-    </form>
+    </div>
   );
 };
 
+/* 
+ * Componente principal: PhotoDetail
+ * Página de detalle de una fotografía que permite:
+ * 1. Ver información de la foto (imagen, metadatos, precio)
+ * 2. Seleccionar variantes de productos para impresión (tamaños, colores)
+ * 3. Obtener cotizaciones en tiempo real desde Prodigi
+ * 4. Realizar el pedido y pago a través de Stripe
+ */
 const PhotoDetail = () => {
   const { photoId } = useParams();
   const navigate = useNavigate();
 
+  /* Estado para la información de la fotografía */
   const [photo, setPhoto] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  /* Estado para las variantes de productos disponibles en Prodigi */
   const [variants, setVariants] = useState([]);
   const [variantsLoading, setVariantsLoading] = useState(false);
   const [variantsError, setVariantsError] = useState(null);
 
+  /* Estado del pedido: producto seleccionado, cantidad, destinatario, etc. */
   const [orderState, setOrderState] = useState({
     variantId: "",
     colorCode: "",
@@ -160,12 +182,14 @@ const PhotoDetail = () => {
     },
   });
 
+  /* Estado de feedback del proceso de pedido */
   const [orderFeedback, setOrderFeedback] = useState({
     submitting: false,
     success: null,
     error: null,
   });
 
+  /* Estado de la cotización actual de Prodigi */
   const [quoteState, setQuoteState] = useState({
     loading: false,
     quote: null,
@@ -174,6 +198,7 @@ const PhotoDetail = () => {
   });
   const [lastQuoteContext, setLastQuoteContext] = useState(null);
 
+  /* Estado para la integración con Stripe (pasarela de pago) */
   const [stripePromise, setStripePromise] = useState(null);
   const [stripeConfigError, setStripeConfigError] = useState(null);
   const [paymentIntentState, setPaymentIntentState] = useState(() =>
@@ -182,12 +207,14 @@ const PhotoDetail = () => {
   const [paymentProcessing, setPaymentProcessing] = useState(false);
   const [paymentSuccess, setPaymentSuccess] = useState(null);
 
+  /* Callback para resetear el flujo de pago y volver al estado inicial */
   const resetPaymentFlow = useCallback(() => {
     setPaymentIntentState(getInitialPaymentState());
     setPaymentProcessing(false);
     setPaymentSuccess(null);
   }, []);
 
+  /* Callback cuando el pago se confirma exitosamente en Stripe */
   const handlePaymentSuccess = useCallback((paymentIntent) => {
     setPaymentProcessing(false);
     setPaymentSuccess(paymentIntent?.id || null);
@@ -203,6 +230,7 @@ const PhotoDetail = () => {
     });
   }, []);
 
+  /* Callback cuando ocurre un error en el proceso de pago */
   const handlePaymentError = useCallback((message) => {
     const fallback =
       message ||
@@ -215,18 +243,22 @@ const PhotoDetail = () => {
     setOrderFeedback({ submitting: false, success: null, error: fallback });
   }, []);
 
+  /* Callback para actualizar el estado de procesamiento del pago */
   const handleProcessingChange = useCallback((status) => {
     setPaymentProcessing(Boolean(status));
   }, []);
 
+  /* Caché local para almacenar detalles de productos ya consultados (evita peticiones repetidas) */
   const [productDetailsCache, setProductDetailsCache] = useState({});
 
   const imageBase = import.meta.env.VITE_URL_BACKEND;
 
+  /* Efecto para cargar los datos iniciales de la fotografía */
   useEffect(() => {
     const fetchPhoto = async () => {
       try {
         setLoading(true);
+        /* API - Obtener información pública de la fotografía por su ID */
         const { data } = await api.get(`/photos/public/${photoId}`);
         setPhoto(data);
       } catch (err) {
@@ -240,11 +272,13 @@ const PhotoDetail = () => {
     fetchPhoto();
   }, [photoId]);
 
+  /* Efecto para inicializar la configuración de Stripe (pasarela de pago) */
   useEffect(() => {
     let cancelled = false;
 
     const fetchStripeConfig = async () => {
       try {
+        /* API - Obtener la clave pública de Stripe para inicializar el cliente de pagos */
         const { data } = await api.get("/payments/config");
         const publishableKey = data?.publishableKey;
         if (!publishableKey) {
@@ -271,6 +305,7 @@ const PhotoDetail = () => {
     };
   }, []);
 
+  /* Efecto para resetear el flujo de pago cuando cambian los datos del pedido */
   useEffect(() => {
     if (
       !paymentIntentState.clientSecret &&
@@ -280,6 +315,8 @@ const PhotoDetail = () => {
       return;
     }
 
+    /* Si ya existe un intento de pago y el usuario modifica el pedido, reiniciamos el flujo */
+    console.log("🔄 [DEBUG] Resetting payment flow due to order change");
     resetPaymentFlow();
     setOrderFeedback({ submitting: false, success: null, error: null });
   }, [
@@ -287,17 +324,19 @@ const PhotoDetail = () => {
     orderState.copies,
     orderState.colorCode,
     orderState.recipient.countryCode,
-    paymentIntentState.clientSecret,
-    paymentIntentState.loading,
-    paymentSuccess,
+    // NO incluimos paymentIntentState.clientSecret, paymentIntentState.loading ni paymentSuccess
+    // porque queremos que el efecto SOLO se dispare cuando el usuario cambia los datos del pedido,
+    // no cuando se crea o actualiza el payment intent
     resetPaymentFlow,
   ]);
 
+  /* Efecto para cargar las variantes de productos disponibles para esta fotografía desde Prodigi */
   useEffect(() => {
     const fetchVariants = async () => {
       if (!photoId) return;
       try {
         setVariantsLoading(true);
+        /* API - Obtener lista de productos/variantes de Prodigi vinculados a esta fotografía */
         const { data } = await api.get("/prodigi/products", {
           params: { photoId },
         });
@@ -305,6 +344,7 @@ const PhotoDetail = () => {
         setVariants(payload);
         setVariantsError(null);
 
+        /* Si hay variantes disponibles, seleccionamos la primera por defecto o mantenemos la actual si existe */
         if (payload.length > 0) {
           setOrderState((prev) => {
             const currentVariantId = String(prev.variantId || "");
@@ -333,6 +373,7 @@ const PhotoDetail = () => {
     fetchVariants();
   }, [photoId]);
 
+  /* Memo para obtener la variante de producto seleccionada actualmente */
   const selectedVariant = useMemo(() => {
     if (!orderState.variantId) return null;
     return (
@@ -340,6 +381,7 @@ const PhotoDetail = () => {
     );
   }, [variants, orderState.variantId]);
 
+  /* Efecto para gestionar la selección automática de colores cuando cambia la variante */
   useEffect(() => {
     if (!selectedVariant) {
       if (orderState.colorCode) {
@@ -352,6 +394,7 @@ const PhotoDetail = () => {
       ? selectedVariant.colorOptions
       : [];
 
+    /* Si la variante no tiene opciones de color, limpiamos el código de color */
     if (colors.length === 0) {
       if (orderState.colorCode) {
         setOrderState((prev) => ({ ...prev, colorCode: "" }));
@@ -359,6 +402,7 @@ const PhotoDetail = () => {
       return;
     }
 
+    /* Si el color actual no existe en las opciones de esta variante, seleccionamos el primero */
     const normalizedFirstCode = colors[0].code
       ? String(colors[0].code).toUpperCase()
       : "";
@@ -368,6 +412,7 @@ const PhotoDetail = () => {
     }
   }, [selectedVariant, orderState.colorCode]);
 
+  /* Memo para obtener los datos del color seleccionado actualmente */
   const selectedColorData = useMemo(() => {
     if (!selectedVariant || !orderState.colorCode) return null;
     return (
@@ -377,9 +422,11 @@ const PhotoDetail = () => {
     );
   }, [selectedVariant, orderState.colorCode]);
 
+  /* Memo para determinar qué imágenes mockup mostrar según la variante y color seleccionados */
   const displayedMockups = useMemo(() => {
     if (!selectedVariant) return [];
 
+    /* Si el color tiene mockups específicos, los usamos; si no, usamos los de la variante */
     if (selectedColorData?.mockupImages?.length) {
       return selectedColorData.mockupImages;
     }
@@ -387,17 +434,20 @@ const PhotoDetail = () => {
     return selectedVariant.mockupImages || [];
   }, [selectedVariant, selectedColorData]);
 
+  /* Extraemos el SKU de la variante seleccionada para obtener detalles del catálogo */
   const selectedVariantSku = selectedVariant?.catalogProduct?.sku || null;
   const selectedProductDetailsEntry = selectedVariantSku
     ? productDetailsCache[selectedVariantSku]
     : null;
   const photoIdValue = photo?._id;
 
+  /* Efecto para obtener detalles completos del producto desde el catálogo de Prodigi */
   useEffect(() => {
     if (!selectedVariantSku) return;
 
     const cachedEntry = selectedProductDetailsEntry;
 
+    /* Si ya tenemos los detalles en caché, no volvemos a pedirlos */
     if (cachedEntry?.status === "loading" || cachedEntry?.status === "loaded") {
       console.log("[Prodigi] product details already cached", {
         sku: selectedVariantSku,
@@ -424,6 +474,7 @@ const PhotoDetail = () => {
 
     const fetchProductDetails = async () => {
       try {
+        /* API - Obtener detalles completos del producto (atributos, especificaciones) desde el catálogo de Prodigi */
         const { data } = await api.get(
           `/prodigi/catalog/details/${encodeURIComponent(selectedVariantSku)}`
         );
@@ -474,21 +525,25 @@ const PhotoDetail = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedVariantSku]);
 
+  /* Handler para cambiar la variante de producto seleccionada */
   const handleSelectVariant = (variantId) => {
     setOrderState((prev) => ({ ...prev, variantId, colorCode: "" }));
     setOrderFeedback({ submitting: false, success: null, error: null });
   };
 
+  /* Handler para cambiar el color seleccionado */
   const handleSelectColor = (colorCode) => {
     const normalized = colorCode ? String(colorCode).toUpperCase() : "";
     setOrderState((prev) => ({ ...prev, colorCode: normalized }));
     setOrderFeedback({ submitting: false, success: null, error: null });
   };
 
+  /* Handler para cambiar campos del pedido (ej: número de copias) */
   const handleOrderFieldChange = (field, value) => {
     setOrderState((prev) => {
       if (field === "copies") {
         const parsedValue = Number(value);
+        /* Limitamos las copias entre 1 y 10 */
         const sanitized = Number.isNaN(parsedValue)
           ? 1
           : Math.min(Math.max(parsedValue, 1), 10);
@@ -499,6 +554,7 @@ const PhotoDetail = () => {
     });
   };
 
+  /* Handler para cambiar datos del destinatario (nombre, dirección, etc.) */
   const handleRecipientChange = (field, value) => {
     setOrderState((prev) => ({
       ...prev,
@@ -512,15 +568,38 @@ const PhotoDetail = () => {
     }));
   };
 
+  /* Debug: loguear el estado del botón de pago */
+  useEffect(() => {
+    const isButtonDisabled = orderFeedback.submitting || paymentIntentState.loading || !stripePromise;
+    console.log("🔘 [DEBUG] Submit button state:", {
+      disabled: isButtonDisabled,
+      submitting: orderFeedback.submitting,
+      loading: paymentIntentState.loading,
+      hasStripePromise: !!stripePromise,
+      hasClientSecret: !!paymentIntentState.clientSecret
+    });
+  }, [orderFeedback.submitting, paymentIntentState.loading, paymentIntentState.clientSecret, stripePromise]);
+
+  /* Handler principal para el envío del formulario de pedido - crea el payment intent en Stripe */
   const handleOrderSubmit = async (event) => {
     event.preventDefault();
+    console.log("🔥 [DEBUG] handleOrderSubmit triggered", { 
+      hasClientSecret: !!paymentIntentState.clientSecret,
+      photoIdValue, 
+      variantId: orderState.variantId,
+      recipient: orderState.recipient,
+      lastQuoteContext
+    });
 
     if (paymentIntentState.clientSecret) {
       // El formulario de Stripe se encarga del paso final.
+      console.log("🔥 [DEBUG] ClientSecret already exists, skipping");
       return;
     }
 
+    /* Validaciones: verificamos que haya producto seleccionado */
     if (!photoIdValue || !orderState.variantId || !selectedVariant) {
+      console.log("❌ [DEBUG] Validation failed: Missing product");
       setOrderFeedback({
         submitting: false,
         success: null,
@@ -528,13 +607,16 @@ const PhotoDetail = () => {
       });
       return;
     }
+    console.log("✅ [DEBUG] Product validation passed");
 
+    /* Validación: verificamos que todos los campos obligatorios del destinatario estén completos */
     const missingFields = REQUIRED_RECIPIENT_FIELDS.filter(({ key }) => {
       const value = orderState.recipient[key];
       return !value || !String(value).trim();
     });
 
     if (missingFields.length) {
+      console.log("❌ [DEBUG] Validation failed: Missing fields", missingFields);
       setOrderFeedback({
         submitting: false,
         success: null,
@@ -544,8 +626,11 @@ const PhotoDetail = () => {
       });
       return;
     }
+    console.log("✅ [DEBUG] Recipient validation passed");
 
+    /* Validación: verificamos que Stripe esté inicializado */
     if (!stripePromise) {
+      console.log("❌ [DEBUG] Validation failed: Stripe not ready", stripeConfigError);
       setOrderFeedback({
         submitting: false,
         success: null,
@@ -555,8 +640,15 @@ const PhotoDetail = () => {
       });
       return;
     }
+    console.log("✅ [DEBUG] Stripe validation passed");
 
+    /* Validación: verificamos que tengamos una cotización válida */
     if (!lastQuoteContext || lastQuoteContext.variantId !== orderState.variantId) {
+      console.log("❌ [DEBUG] Validation failed: Quote mismatch", { 
+        hasQuote: !!lastQuoteContext,
+        quoteVariant: lastQuoteContext?.variantId,
+        orderVariant: orderState.variantId
+      });
       setOrderFeedback({
         submitting: false,
         success: null,
@@ -565,6 +657,7 @@ const PhotoDetail = () => {
       });
       return;
     }
+    console.log("✅ [DEBUG] Quote context validation passed");
 
     const colorCodePayload = selectedVariant?.colorOptions?.length
       ? orderState.colorCode || selectedVariant.colorOptions[0]?.code
@@ -574,6 +667,7 @@ const PhotoDetail = () => {
       : undefined;
     const normalizedCountry = (orderState.recipient.countryCode || "ES").toUpperCase();
 
+    /* Verificamos que la cotización actual coincida con los datos del pedido */
     const matchesQuote =
       lastQuoteContext &&
       lastQuoteContext.variantId === orderState.variantId &&
@@ -582,6 +676,15 @@ const PhotoDetail = () => {
       lastQuoteContext.destinationCountryCode === normalizedCountry;
 
     if (!matchesQuote) {
+      console.log("❌ [DEBUG] Validation failed: Quote doesn't match order", {
+        lastQuoteContext,
+        orderData: {
+          variantId: orderState.variantId,
+          copies: orderState.copies,
+          colorCode: normalizedColorCode,
+          country: normalizedCountry
+        }
+      });
       setOrderFeedback({
         submitting: false,
         success: null,
@@ -590,7 +693,9 @@ const PhotoDetail = () => {
       });
       return;
     }
+    console.log("✅ [DEBUG] Quote match validation passed");
 
+    console.log("🚀 [DEBUG] All validations passed, creating PaymentIntent...");
     setOrderFeedback({ submitting: true, success: null, error: null });
     setPaymentIntentState((prev) => ({
       ...prev,
@@ -599,6 +704,7 @@ const PhotoDetail = () => {
     }));
 
     try {
+      /* Preparamos el payload con toda la información del pedido */
       const payload = {
         photoId: photoIdValue,
         variantId: orderState.variantId,
@@ -613,10 +719,13 @@ const PhotoDetail = () => {
         assetUrl: selectedColorData?.assetUrl || selectedVariant.assetUrl || undefined,
       };
 
+      /* API - Crear payment intent en Stripe para este pedido (reserva el monto pero no lo cobra aún) */
+      console.log("📡 [DEBUG] Calling /payments/order/payment-intent with payload:", payload);
       const { data } = await api.post(
         "/payments/order/payment-intent",
         payload
       );
+      console.log("✅ [DEBUG] PaymentIntent created successfully:", data);
 
       const pricing = data?.pricing || null;
 
@@ -656,12 +765,15 @@ const PhotoDetail = () => {
     }
   };
 
+  /* Efecto principal para solicitar cotización de precio a Prodigi basada en la configuración actual */
   useEffect(() => {
+    /* Validaciones previas: necesitamos al menos la foto y la variante */
     if (!photoIdValue || !orderState.variantId) {
       setQuoteState({ loading: false, quote: null, pricing: null, error: null });
       return;
     }
 
+    /* Esperamos a que la variante esté completamente cargada */
     if (!selectedVariant) {
       setQuoteState((prev) =>
         prev.loading && !prev.quote && !prev.error
@@ -675,6 +787,7 @@ const PhotoDetail = () => {
       return;
     }
 
+    /* Validamos que tengamos el SKU del producto */
     if (!selectedVariantSku) {
       setQuoteState({
         loading: false,
@@ -688,6 +801,7 @@ const PhotoDetail = () => {
       return;
     }
 
+    /* Esperamos a que se carguen los detalles del producto antes de cotizar */
     if (!selectedProductDetailsEntry || selectedProductDetailsEntry.status === "loading") {
       setQuoteState((prev) =>
         prev.loading && !prev.quote && !prev.error
@@ -701,6 +815,7 @@ const PhotoDetail = () => {
       return;
     }
 
+    /* Si hubo error al cargar detalles del producto, no podemos cotizar */
     if (selectedProductDetailsEntry.status === "error") {
       setQuoteState({
         loading: false,
@@ -725,6 +840,7 @@ const PhotoDetail = () => {
         error: null,
       });
       try {
+        /* Normalizamos el código de color si existe */
         const colorCodePayload = selectedVariant?.colorOptions?.length
           ? orderState.colorCode || selectedVariant.colorOptions[0]?.code
           : undefined;
@@ -732,6 +848,7 @@ const PhotoDetail = () => {
           ? String(colorCodePayload).toUpperCase()
           : undefined;
 
+        /* Extraemos los atributos del producto desde los detalles cargados previamente */
         const detailsData = selectedProductDetailsEntry.data || {};
         const variantAttributesCandidate =
           detailsData.variantAttributes &&
@@ -754,6 +871,7 @@ const PhotoDetail = () => {
           attributes: attributesPayload,
         });
 
+        /* API - Solicitar cotización de precio a Prodigi con la configuración actual del pedido */
         const { data } = await api.post(
           "/prodigi/quotes",
           {
@@ -777,6 +895,7 @@ const PhotoDetail = () => {
           quote: selectedQuote,
         });
 
+        /* Guardamos la cotización y su contexto para validar que coincida al momento del pago */
         setQuoteState({
           loading: false,
           quote: selectedQuote,
@@ -827,8 +946,10 @@ const PhotoDetail = () => {
     selectedProductDetailsEntry,
   ]);
 
+  /* Renderizar skeleton mientras se cargan los datos iniciales */
   if (loading) return <DetailSkeleton />;
 
+  /* Renderizar pantalla de error si no se encuentra la foto */
   if (error || !photo) {
     return (
       <div className="mx-auto flex w-full max-w-3xl flex-col items-center gap-4 px-4 pb-24 pt-24 text-center text-white">
@@ -843,6 +964,7 @@ const PhotoDetail = () => {
     );
   }
 
+  /* Extraemos los datos de la fotografía */
   const {
     title,
     description,
@@ -852,6 +974,7 @@ const PhotoDetail = () => {
     createdAt,
   } = photo;
 
+  /* Calculamos los precios finales basados en la cotización más reciente */
   const resolvedPricing =
     paymentIntentState.pricing || quoteState.pricing || null;
   const prodigiItemsAmount = parseAmount(
@@ -869,10 +992,12 @@ const PhotoDetail = () => {
   const platformMarginAmount = parseAmount(
     resolvedPricing?.platformMargin ?? selectedVariant?.profitMargin
   );
+  /* Precio total de Prodigi (sin margen de la plataforma) */
   const prodigiTotal = parseAmount(
     resolvedPricing?.prodigiTotal ||
       prodigiItemsAmount + prodigiShippingAmount + prodigiTaxAmount + prodigiFeesAmount
   );
+  /* Precio total final que paga el cliente (Prodigi + margen) */
   const quoteTotalAmount = parseAmount(
     resolvedPricing?.totalWithMargin || prodigiTotal + platformMarginAmount
   );

@@ -10,6 +10,6 @@ const router = express.Router();
 
 router.get("/config", getStripeConfig);
 router.post("/create-payment-intent", authenticate, createGenericPaymentIntent);
-router.post("/order/payment-intent", authenticate, createOrderPaymentIntent);
+router.post("/order/payment-intent", createOrderPaymentIntent); // Permitir pedidos sin autenticación
 
 module.exports = router;

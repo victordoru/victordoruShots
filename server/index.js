@@ -21,7 +21,10 @@ connectDB().catch((err) => {
 
 // Middlewares
 app.use(cors({
-    origin: [process.env.URL_FRONTEND || "http://localhost:5173"],
+    origin: [
+        process.env.URL_FRONTEND || "http://localhost:5173",
+        "http://localhost:5174", // Puerto alternativo de Vite
+    ],
     credentials: true,
 }));
 

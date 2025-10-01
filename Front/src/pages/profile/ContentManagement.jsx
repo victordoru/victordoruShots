@@ -172,6 +172,8 @@ const ContentManagement = () => {
 
   const [selectedPhotoId, setSelectedPhotoId] = useState("");
   const [variantsByPhoto, setVariantsByPhoto] = useState({});
+  const [orderStatusByPhoto, setOrderStatusByPhoto] = useState({});
+  const [orderLoadingPhotoId, setOrderLoadingPhotoId] = useState(null);
   const [variantForm, setVariantForm] = useState(variantInitialState);
   const [variantEditingId, setVariantEditingId] = useState(null);
   const [variantSubmitting, setVariantSubmitting] = useState(false);
@@ -311,13 +313,14 @@ const ContentManagement = () => {
   };
 
   const fetchPhotoVariants = async (photoId) => {
-    if (!photoId) return;
+    if (!photoId) return [];
     try {
       const { data } = await api.get(`/prodigi/admin/photos/${photoId}/variants`);
       setVariantsByPhoto((prev) => ({
         ...prev,
         [photoId]: Array.isArray(data) ? data : [],
       }));
+      return Array.isArray(data) ? data : [];
     } catch (err) {
       console.error("Error fetching photo variants", err);
       setVariantMessage({
@@ -326,6 +329,118 @@ const ContentManagement = () => {
           err.response?.data?.error ||
           "No se pudieron cargar las variantes para esta fotografía",
       });
+      return [];
+    }
+  };
+
+  const createTestOrder = async (photoId) => {
+    if (!photoId) return;
+    setOrderLoadingPhotoId(photoId);
+    setOrderStatusByPhoto((prev) => ({
+      ...prev,
+      [photoId]: { status: "loading", message: "Creando pedido de prueba..." },
+    }));
+
+    try {
+      let variants = variantsByPhoto[photoId] || [];
+      if (!variants.length) {
+        variants = await fetchPhotoVariants(photoId);
+      }
+
+      if (!variants.length) {
+        setOrderStatusByPhoto((prev) => ({
+          ...prev,
+          [photoId]: {
+            status: "error",
+            message: "No hay variantes configuradas para esta fotografía.",
+          },
+        }));
+        return;
+      }
+
+      const variant = variants[0];
+      const variantId = variant.id || variant._id;
+      const colorCode =
+        variant.colorOptions?.[0]?.code ||
+        variant.catalogProduct?.availableColors?.[0]?.code ||
+        undefined;
+
+      const variantHasAsset = Boolean(
+        variant.assetDetails?.assetId ||
+          variant.assetUrl ||
+          (variant.colorOptions || []).some((color) => color.assetUrl)
+      );
+
+      if (!variantId) {
+        setOrderStatusByPhoto((prev) => ({
+          ...prev,
+          [photoId]: {
+            status: "error",
+            message: "La variante seleccionada no tiene identificador válido.",
+          },
+        }));
+        return;
+      }
+
+      if (!variantHasAsset) {
+        setOrderStatusByPhoto((prev) => ({
+          ...prev,
+          [photoId]: {
+            status: "error",
+            message:
+              "Configura un asset o mockup en la variante antes de crear un pedido.",
+          },
+        }));
+        return;
+      }
+      photoId="https://victodorushots.com/uploads/1758834510970-prodigi-GLOBAL-BOX-11X14-color_natural-orientation_landscape.jpg";
+console.log("photoId", photoId);
+console.log("variantId", variantId);
+console.log("colorCode", colorCode);
+      const payload = {
+        photoId,
+        variantId,
+        colorCode,
+        copies: 1,
+        shippingMethod: "Budget",
+        recipient: {
+          name: "Test Recipient",
+          email: "test@example.com",
+          addressLine1: "calle la vihuela 20",
+          city: "Madrid",
+          postalCode: "29018",
+          countryCode: "ES",
+        },
+      };
+
+      const { data } = await api.post("/prodigi/orders", payload);
+
+      setOrderStatusByPhoto((prev) => ({
+        ...prev,
+        [photoId]: {
+          status: "success",
+          message: data?.order?.id
+            ? `Pedido ${data.order.id} creado (estado ${data.outcome || "Desconocido"}).`
+            : `Pedido creado. Resultado: ${data?.outcome || ""}`,
+        },
+      }));
+    } catch (err) {
+      console.error("Error creating test order", err);
+      const responseData = err.response?.data;
+      const detailText =
+        typeof responseData?.details === "string"
+          ? responseData.details
+          : responseData?.details
+          ? JSON.stringify(responseData.details)
+          : "";
+      const message =
+        responseData?.error || detailText || "No se pudo crear el pedido de prueba";
+      setOrderStatusByPhoto((prev) => ({
+        ...prev,
+        [photoId]: { status: "error", message },
+      }));
+    } finally {
+      setOrderLoadingPhotoId(null);
     }
   };
 
@@ -2140,6 +2255,16 @@ const ContentManagement = () => {
                       >
                         Configurar impresiones
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => createTestOrder(photoItem._id)}
+                        disabled={orderLoadingPhotoId === photoItem._id}
+                        className="rounded-full border border-white/30 px-3 py-1 text-[0.6rem] uppercase tracking-[0.3em] text-white transition hover:border-white/60 hover:text-white disabled:cursor-not-allowed disabled:border-white/10 disabled:text-white/30"
+                      >
+                        {orderLoadingPhotoId === photoItem._id
+                          ? "Creando pedido..."
+                          : "Pedido de prueba"}
+                      </button>
                     </div>
                     <p className="mt-2 text-xs uppercase tracking-[0.3em] text-white/40">
                       {photoItem.createdAt ? new Date(photoItem.createdAt).toLocaleDateString() : ""}
@@ -2181,6 +2306,17 @@ const ContentManagement = () => {
                         </span>
                       ))}
                     </div>
+                  )}
+                  {orderStatusByPhoto[photoItem._id] && (
+                    <p
+                      className={`text-xs ${
+                        orderStatusByPhoto[photoItem._id].status === "error"
+                          ? "text-red-300"
+                          : "text-emerald-300"
+                      }`}
+                    >
+                      {orderStatusByPhoto[photoItem._id].message}
+                    </p>
                   )}
                 </div>
               </article>

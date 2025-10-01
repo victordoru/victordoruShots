@@ -1,3 +1,16 @@
+/* 
+ * CONTROLADOR DE STRIPE - Gestión de pagos y webhooks
+ * 
+ * FLUJO PRINCIPAL:
+ * 1. Frontend solicita crear un payment intent (createOrderPaymentIntent)
+ * 2. Se obtiene cotización de Prodigi antes de crear el payment intent
+ * 3. Se crea el payment intent en Stripe con el monto calculado
+ * 4. Usuario completa el pago en el frontend
+ * 5. Stripe envía webhook "payment_intent.succeeded" 
+ * 6. handlePaymentIntentSucceeded procesa el webhook y crea la orden en Prodigi
+ * 7. Se actualiza el payment intent con el ID de orden de Prodigi
+ */
+
 const Stripe = require("stripe");
 const ProdigiOrder = require("../models/ProdigiOrder");
 const {
@@ -7,6 +20,7 @@ const {
   normalizeRecipient,
 } = require("./prodigiController");
 
+/* Configuración del entorno (prod/test) para usar las claves correctas */
 const environment = process.env.ENVIRONMENT;
 const secretKey =
   environment === "prod"
@@ -21,6 +35,7 @@ const webhookSecret =
     ? process.env.STRIPE_WEBHOOK_SECRET
     : process.env.STRIPE_TEST_WEBHOOK_SECRET || process.env.STRIPE_WEBHOOK_SECRET;
 
+/* Inicialización de Stripe con la clave secreta */
 let stripeInstance = null;
 if (secretKey) {
   stripeInstance = new Stripe(secretKey);
@@ -28,11 +43,13 @@ if (secretKey) {
   console.warn("Stripe secret key is not configured. Stripe routes are disabled.");
 }
 
+/* Respuesta estándar cuando Stripe no está configurado */
 const stripeNotConfiguredResponse = (res) =>
   res.status(503).json({ error: "Stripe is not configured" });
 
 const getStripe = () => stripeInstance;
 
+/* Función auxiliar: limita el número de copias entre 1 y 10 */
 const sanitizeCopies = (value) => {
   const parsed = Number(value);
   if (Number.isNaN(parsed) || parsed <= 0) {
@@ -41,13 +58,16 @@ const sanitizeCopies = (value) => {
   return Math.min(Math.round(parsed), 10);
 };
 
+/* Función auxiliar: convierte un valor a número seguro (0 si no es válido) */
 const safeNumber = (value) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+/* Función auxiliar: formatea un número para almacenarlo en metadata de Stripe */
 const formatMetadataNumber = (value) => safeNumber(value).toFixed(2);
 
+/* Función auxiliar: construye el objeto shipping en formato de Stripe */
 const buildStripeShipping = (recipient) => ({
   name: recipient.name,
   address: {
@@ -61,6 +81,10 @@ const buildStripeShipping = (recipient) => ({
   phone: recipient.phoneNumber || undefined,
 });
 
+/* 
+ * Endpoint: GET /payments/config
+ * Devuelve la clave pública de Stripe para inicializar el cliente en el frontend
+ */
 const getStripeConfig = (req, res) => {
   if (!publishableKey) {
     return res.status(503).json({
@@ -70,6 +94,10 @@ const getStripeConfig = (req, res) => {
   res.json({ publishableKey });
 };
 
+/* 
+ * Endpoint: POST /payments/payment-intent
+ * Crea un payment intent genérico en Stripe (para pagos simples sin orden de Prodigi)
+ */
 const createGenericPaymentIntent = async (req, res) => {
   const stripe = getStripe();
   if (!stripe) {
@@ -86,6 +114,7 @@ const createGenericPaymentIntent = async (req, res) => {
   }
 
   try {
+    /* API Stripe - Crear payment intent genérico */
     const paymentIntent = await stripe.paymentIntents.create({
       amount: Math.max(1, Math.round(numericAmount * 100)),
       currency: currency.toLowerCase(),
@@ -100,6 +129,18 @@ const createGenericPaymentIntent = async (req, res) => {
   }
 };
 
+/* 
+ * Endpoint: POST /payments/order/payment-intent
+ * PASO 1 DEL FLUJO: Crea un payment intent en Stripe para una orden de impresión
+ * 
+ * Este endpoint:
+ * 1. Obtiene una cotización de Prodigi para calcular el precio
+ * 2. Crea el payment intent en Stripe con ese precio
+ * 3. Devuelve el clientSecret al frontend para completar el pago
+ * 
+ * IMPORTANTE: Todavía NO se crea la orden en Prodigi aquí. 
+ * La orden se crea cuando el pago es exitoso (ver handlePaymentIntentSucceeded).
+ */
 const createOrderPaymentIntent = async (req, res) => {
   const stripe = getStripe();
   if (!stripe) {
@@ -117,6 +158,7 @@ const createOrderPaymentIntent = async (req, res) => {
     assetUrl,
   } = req.body || {};
 
+  /* Validación: verificamos que los campos obligatorios estén presentes */
   if (!photoId || !variantId) {
     return res
       .status(400)
@@ -126,6 +168,7 @@ const createOrderPaymentIntent = async (req, res) => {
     return res.status(400).json({ error: "recipient es obligatorio" });
   }
 
+  /* Normalizamos y validamos los datos del destinatario */
   let normalizedRecipient;
   try {
     normalizedRecipient = normalizeRecipient(recipient);
@@ -136,6 +179,8 @@ const createOrderPaymentIntent = async (req, res) => {
   }
 
   try {
+    /* PRODIGI - Obtener cotización de precio antes de crear el payment intent */
+    /* Esta función llama internamente a la API de Prodigi para calcular costes de impresión, envío e impuestos */
     const quoteContext = await computeQuoteForVariant({
       photoId,
       variantId,
@@ -147,6 +192,7 @@ const createOrderPaymentIntent = async (req, res) => {
       assetOverrideUrl: assetUrl,
     });
 
+    /* Extraemos el resumen de precios de la cotización de Prodigi */
     const summary = summarizeProdigiQuote(quoteContext.prodigiResponse);
     if (!summary || summary.prodigiTotal <= 0) {
       return res.status(502).json({
@@ -154,6 +200,7 @@ const createOrderPaymentIntent = async (req, res) => {
       });
     }
 
+    /* Calculamos el precio final: coste de Prodigi + margen de la plataforma */
     const rawMargin = Number(quoteContext.variant.profitMargin || 0);
     const platformMargin = Number.isFinite(rawMargin) && rawMargin > 0 ? rawMargin : 0;
     const totalWithMargin = summary.prodigiTotal + platformMargin;
@@ -164,10 +211,12 @@ const createOrderPaymentIntent = async (req, res) => {
       });
     }
 
+    /* Convertimos el monto a centavos para Stripe (ej: 10.50 EUR = 1050 centavos) */
     const stripeAmount = Math.max(1, Math.round(totalWithMargin * 100));
     const currency = (quoteContext.variant.currency || summary.currency || "EUR").toLowerCase();
     const copiesToPrint = sanitizeCopies(copies);
 
+    /* Preparamos toda la información en metadata para recuperarla en el webhook */
     const metadata = {
       photoId: String(photoId),
       variantId: String(variantId),
@@ -184,10 +233,12 @@ const createOrderPaymentIntent = async (req, res) => {
       platformMargin: formatMetadataNumber(platformMargin),
       totalWithMargin: formatMetadataNumber(totalWithMargin),
       recipient: JSON.stringify(normalizedRecipient),
+      productAttributes: productAttributes ? JSON.stringify(productAttributes) : "",
       createdByUserId: req.user?.userId ? String(req.user.userId) : "",
       merchantReference: `stripe-${Date.now()}`,
     };
 
+    /* API Stripe - Crear payment intent (reserva el monto pero NO lo cobra aún) */
     const paymentIntent = await stripe.paymentIntents.create({
       amount: stripeAmount,
       currency,
@@ -201,15 +252,18 @@ const createOrderPaymentIntent = async (req, res) => {
       metadata,
     });
 
+    /* Actualizamos el metadata con el ID del payment intent como merchant reference */
     const updatedMetadata = {
       ...metadata,
       merchantReference: paymentIntent.id,
     };
 
+    /* API Stripe - Actualizar metadata del payment intent */
     await stripe.paymentIntents.update(paymentIntent.id, {
       metadata: updatedMetadata,
     });
 
+    /* Devolvemos el clientSecret al frontend para que complete el pago */
     res.json({
       clientSecret: paymentIntent.client_secret,
       paymentIntentId: paymentIntent.id,
@@ -237,13 +291,34 @@ const createOrderPaymentIntent = async (req, res) => {
   }
 };
 
+/* 
+ * WEBHOOK HANDLER - Payment Intent Succeeded
+ * PASO 2 DEL FLUJO: Se ejecuta cuando el pago es confirmado exitosamente
+ * 
+ * TRIGGER: Stripe envía este evento automáticamente cuando:
+ * - El usuario completa el pago en el frontend con su tarjeta
+ * - Stripe procesa y confirma el cargo exitosamente
+ * 
+ * FLUJO:
+ * 1. Stripe detecta pago exitoso
+ * 2. Stripe envía webhook "payment_intent.succeeded" a nuestra API
+ * 3. Esta función se ejecuta automáticamente
+ * 4. Recupera la información del metadata del payment intent
+ * 5. CREA LA ORDEN EN PRODIGI (aquí es donde se hace la llamada a Prodigi)
+ * 6. Actualiza el payment intent con el ID de orden de Prodigi
+ * 
+ * IMPORTANTE: Este es el momento en que realmente se crea la orden de impresión en Prodigi.
+ */
 const handlePaymentIntentSucceeded = async (paymentIntent) => {
   const metadata = paymentIntent.metadata || {};
+  
+  /* Validamos que el payment intent tenga toda la información necesaria */
   if (!metadata.photoId || !metadata.variantId || !metadata.recipient) {
     console.warn("[Stripe] Payment intent missing metadata for fulfilment", paymentIntent.id);
     return;
   }
 
+  /* Verificamos si ya existe una orden de Prodigi para este pago (evita duplicados) */
   const existingOrder = await ProdigiOrder.findOne({
     stripePaymentIntentId: paymentIntent.id,
   }).lean();
@@ -253,6 +328,7 @@ const handlePaymentIntentSucceeded = async (paymentIntent) => {
     return;
   }
 
+  /* Parseamos el destinatario desde el metadata */
   let recipientPayload;
   try {
     recipientPayload = JSON.parse(metadata.recipient);
@@ -261,6 +337,7 @@ const handlePaymentIntentSucceeded = async (paymentIntent) => {
     throw parseError;
   }
 
+  /* Reconstruimos el objeto de pricing desde el metadata */
   const pricing = {
     currency: metadata.prodigiCurrency || paymentIntent.currency?.toUpperCase(),
     prodigiItemsAmount: safeNumber(metadata.prodigiItemsAmount),
@@ -279,6 +356,18 @@ const handlePaymentIntentSucceeded = async (paymentIntent) => {
         : safeNumber(metadata.totalWithMargin),
   };
 
+  /* Parseamos productAttributes si están presentes en el metadata */
+  let productAttributesPayload = null;
+  if (metadata.productAttributes) {
+    try {
+      productAttributesPayload = JSON.parse(metadata.productAttributes);
+    } catch (parseError) {
+      console.warn("[Stripe] Cannot parse productAttributes metadata", parseError.message);
+    }
+  }
+
+  /* PRODIGI - Crear la orden de impresión en Prodigi */
+  /* Esta es la llamada CRÍTICA que envía la orden a Prodigi para que impriman y envíen el producto */
   const result = await placeProdigiOrder({
     photoId: metadata.photoId,
     variantId: metadata.variantId,
@@ -291,10 +380,13 @@ const handlePaymentIntentSucceeded = async (paymentIntent) => {
     paymentStatus: paymentIntent.status,
     pricing,
     merchantReference: metadata.merchantReference || paymentIntent.id,
+    productAttributes: productAttributesPayload,
   });
 
+  /* Si la orden se creó exitosamente en Prodigi, actualizamos el payment intent con el ID de Prodigi */
   if (result?.prodigiOrder?.id) {
     try {
+      /* API Stripe - Actualizar metadata del payment intent con información de Prodigi */
       await stripeInstance.paymentIntents.update(paymentIntent.id, {
         metadata: {
           ...metadata,
@@ -311,14 +403,46 @@ const handlePaymentIntentSucceeded = async (paymentIntent) => {
   }
 };
 
+/* 
+ * WEBHOOK HANDLER - Payment Intent Failed
+ * Se ejecuta cuando el pago falla (tarjeta rechazada, fondos insuficientes, etc.)
+ * 
+ * TRIGGER: Stripe envía este evento automáticamente cuando:
+ * - La tarjeta es rechazada
+ * - No hay fondos suficientes
+ * - Cualquier otro error en el procesamiento del pago
+ * 
+ * IMPORTANTE: NO se crea ninguna orden en Prodigi si el pago falla.
+ */
 const handlePaymentIntentFailed = async (paymentIntent) => {
   console.warn(
     "[Stripe] Payment intent failed",
     paymentIntent.id,
     paymentIntent.last_payment_error?.message
   );
+  /* Aquí podríamos agregar lógica adicional como:
+   * - Enviar email al usuario notificando el fallo
+   * - Registrar estadísticas de pagos fallidos
+   * - Alertar al administrador si hay muchos fallos
+   */
 };
 
+/* 
+ * Endpoint: POST /payments/webhook
+ * RECEPTOR DE WEBHOOKS DE STRIPE
+ * 
+ * Este endpoint recibe notificaciones automáticas de Stripe cuando ocurren eventos:
+ * - "payment_intent.succeeded": Pago exitoso → crea orden en Prodigi
+ * - "payment_intent.payment_failed": Pago fallido → solo registra el error
+ * 
+ * SEGURIDAD:
+ * - Verifica la firma del webhook con webhookSecret para asegurar que viene de Stripe
+ * - Solo procesa eventos autenticados
+ * 
+ * CONFIGURACIÓN:
+ * - Este webhook debe estar configurado en el dashboard de Stripe
+ * - URL del webhook: https://tu-dominio.com/api/payments/webhook
+ */
 const handleStripeWebhook = async (req, res) => {
   const stripe = getStripe();
   if (!stripe) {
@@ -330,11 +454,13 @@ const handleStripeWebhook = async (req, res) => {
     return res.status(503).json({ error: "Stripe webhook not configured" });
   }
 
+  /* Obtenemos la firma del header para verificar autenticidad */
   const signature = req.headers["stripe-signature"];
   if (!signature) {
     return res.status(400).send("Missing Stripe signature header");
   }
 
+  /* Verificamos que el webhook realmente viene de Stripe usando la firma */
   let event;
   try {
     event = stripe.webhooks.constructEvent(req.body, signature, webhookSecret);
@@ -343,12 +469,15 @@ const handleStripeWebhook = async (req, res) => {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
+  /* Procesamos el evento según su tipo */
   try {
     switch (event.type) {
       case "payment_intent.succeeded":
+        /* TRIGGER: Pago exitoso - aquí se crea la orden en Prodigi */
         await handlePaymentIntentSucceeded(event.data.object);
         break;
       case "payment_intent.payment_failed":
+        /* TRIGGER: Pago fallido - solo se registra el error */
         await handlePaymentIntentFailed(event.data.object);
         break;
       default:
@@ -356,9 +485,14 @@ const handleStripeWebhook = async (req, res) => {
     }
   } catch (handlerError) {
     console.error("Error processing Stripe webhook event", handlerError);
+    /* Si es un error de Prodigi con detalles de validación, los mostramos */
+    if (handlerError.data) {
+      console.error("[Stripe] Prodigi validation error details:", JSON.stringify(handlerError.data, null, 2));
+    }
     return res.status(500).send("Webhook handler error");
   }
 
+  /* Confirmamos a Stripe que recibimos el webhook correctamente */
   res.json({ received: true });
 };
 
