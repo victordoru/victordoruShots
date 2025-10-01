@@ -17,6 +17,8 @@ const PRODIGI_ASSET_BASE_URL = process.env.PRODIGI_ASSET_BASE_URL;
 const DEFAULT_SHIPPING_METHOD =
   process.env.PRODIGI_DEFAULT_SHIPPING_METHOD || "Budget";
 
+console.log("[Prodigi] PRODIGI_ASSET_BASE_URL:", PRODIGI_ASSET_BASE_URL || "(not set)");
+
 const sanitizeInt = (value, fallback = 1) => {
   const parsed = parseInt(value, 10);
   if (Number.isNaN(parsed) || parsed <= 0) return fallback;
@@ -357,6 +359,7 @@ const buildAssetUrl = (imagePath) => {
   }
 
   if (!PRODIGI_ASSET_BASE_URL) {
+    console.warn("[Prodigi] buildAssetUrl: PRODIGI_ASSET_BASE_URL not set, returning relative path", imagePath);
     if (!imagePath.startsWith("/")) {
       return `/${imagePath}`;
     }
@@ -365,7 +368,9 @@ const buildAssetUrl = (imagePath) => {
 
   const base = PRODIGI_ASSET_BASE_URL.replace(/\/$/, "");
   const cleanedPath = imagePath.startsWith("/") ? imagePath : `/${imagePath}`;
-  return `${base}${cleanedPath}`;
+  const fullUrl = `${base}${cleanedPath}`;
+  console.log("[Prodigi] buildAssetUrl:", { imagePath, base, fullUrl });
+  return fullUrl;
 };
 
 const summarizeProdigiQuote = (prodigiResponse) => {
